@@ -7,6 +7,8 @@
 #include <cctype>
 #include <set>
 #include <unordered_map>
+#include <limits>
+#include <optional>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,32 +54,116 @@ bool check_for_error(Settings& settings) {
     return true;
 }
 
-// Get total system RAM in GB
-double get_total_system_ram() {
-    double total_bytes = 0.0;
-    
-#ifdef __linux__
-    struct sysinfo mem_info;
-    if (sysinfo(&mem_info) == 0) {
-        total_bytes = static_cast<double>(mem_info.totalram) * mem_info.mem_unit;
+namespace {
+
+std::optional<unsigned long long> read_memory_value(const fs::path& path) {
+    std::ifstream input(path);
+    std::string value;
+    if (!(input >> value) || value == "max") return std::nullopt;
+    try {
+        const auto parsed = std::stoull(value);
+        // cgroup v1 commonly uses a huge sentinel for an unlimited controller.
+        if (parsed >= (1ULL << 60)) return std::nullopt;
+        return parsed;
+    } catch (...) {
+        return std::nullopt;
     }
+}
+
+#ifdef __linux__
+std::optional<unsigned long long> linux_mem_available() {
+    std::ifstream meminfo("/proc/meminfo");
+    std::string key;
+    unsigned long long kib = 0;
+    std::string unit;
+    while (meminfo >> key >> kib >> unit) {
+        if (key == "MemAvailable:") return kib * 1024ULL;
+    }
+    return std::nullopt;
+}
+
+std::optional<fs::path> process_cgroup_directory() {
+    std::ifstream cgroups("/proc/self/cgroup");
+    std::string line;
+    while (std::getline(cgroups, line)) {
+        const auto first = line.find(':');
+        const auto second = line.find(':', first == std::string::npos
+                                                ? first : first + 1);
+        if (first == std::string::npos || second == std::string::npos) continue;
+        const std::string controllers = line.substr(first + 1, second - first - 1);
+        std::string relative = line.substr(second + 1);
+        while (!relative.empty() && relative.front() == '/') relative.erase(0, 1);
+
+        if (controllers.empty())
+            return fs::path("/sys/fs/cgroup") / relative;
+        if (controllers == "memory" ||
+            controllers.find(",memory") != std::string::npos ||
+            controllers.find("memory,") != std::string::npos)
+            return fs::path("/sys/fs/cgroup/memory") / relative;
+    }
+    return std::nullopt;
+}
+
+std::optional<unsigned long long> cgroup_memory_available() {
+    const auto directory = process_cgroup_directory();
+    if (!directory) return std::nullopt;
+
+    const bool v2 = fs::exists(*directory / "memory.max");
+    const fs::path controller_root =
+        v2 ? fs::path("/sys/fs/cgroup") : fs::path("/sys/fs/cgroup/memory");
+    std::optional<unsigned long long> smallest_remaining;
+    fs::path current = *directory;
+    while (current.string().size() >= controller_root.string().size()) {
+        const fs::path max_path = current /
+            (v2 ? "memory.max" : "memory.limit_in_bytes");
+        const fs::path used_path = current /
+            (v2 ? "memory.current" : "memory.usage_in_bytes");
+        const auto limit = read_memory_value(max_path);
+        const auto used = read_memory_value(used_path);
+        if (limit && used) {
+            const unsigned long long remaining =
+                *used >= *limit ? 0ULL : *limit - *used;
+            if (!smallest_remaining || remaining < *smallest_remaining)
+                smallest_remaining = remaining;
+        }
+        if (current == controller_root || current == current.parent_path()) break;
+        current = current.parent_path();
+    }
+    return smallest_remaining;
+}
+#endif
+
+}  // namespace
+
+// Return the memory currently available to this process in GiB. A negative
+// result means the platform did not provide a usable measurement; zero is a
+// real, detected no-memory condition and must not trigger an unsafe fallback.
+double get_available_system_ram() {
+    std::optional<unsigned long long> available_bytes;
+
+#ifdef __linux__
+    available_bytes = linux_mem_available();
+    const auto cgroup_available = cgroup_memory_available();
+    if (cgroup_available &&
+        (!available_bytes || *cgroup_available < *available_bytes))
+        available_bytes = cgroup_available;
 #elif defined(_WIN32)
     MEMORYSTATUSEX mem_info;
     mem_info.dwLength = sizeof(MEMORYSTATUSEX);
     if (GlobalMemoryStatusEx(&mem_info)) {
-        total_bytes = static_cast<double>(mem_info.ullTotalPhys);
+        available_bytes = mem_info.ullAvailPhys;
     }
 #elif defined(__APPLE__)
     int mib[2] = {CTL_HW, HW_MEMSIZE};
     int64_t mem_size;
     size_t len = sizeof(mem_size);
     if (sysctl(mib, 2, &mem_size, &len, nullptr, 0) == 0) {
-        total_bytes = static_cast<double>(mem_size);
+        available_bytes = static_cast<unsigned long long>(mem_size);
     }
 #endif
-    
-    // Convert bytes to GB
-    return total_bytes / (1024.0 * 1024.0 * 1024.0);
+    if (!available_bytes) return -1.0;
+    return static_cast<double>(*available_bytes) /
+           (1024.0 * 1024.0 * 1024.0);
 }
 
 Settings parse_arguments(int argc, char* argv[]) {
@@ -115,12 +201,17 @@ Settings parse_arguments(int argc, char* argv[]) {
                  << "  --cycles <path>                 Retained cycles.txt (post-process only)\n"
                  << "\nOptions:\n"
                  << "  --output-folder <path>          Output directory  [default: my_mcaat_run_TIMESTAMP]\n"
-                 << "  --ram <amount>                  Memory cap: B/K/M/G suffix  [default: 95% system]\n"
+                 << "  --ram <amount>                  Memory cap: B/K/M/G suffix  [default: 85% available]\n"
                  << "  --threads <num>                 Thread count  [default: CPU cores - 2]\n"
                  << "  --cycle-max-length <int>        Maximum cycle length  [default: 90]\n"
                  << "  --cycle-min-length <int>        Minimum cycle length  [default: 27]\n"
                  << "  --threshold-multiplicity <int>  Edge multiplicity cutoff  [default: 20]\n"
                  << "  --low-abundance <true|false>    Low-abundance mode  [default: true]\n"
+                 << "  --boundary-mode <legacy|two-sided>\n"
+                 << "                                   Repeat boundary inference [default: legacy]\n"
+                 << "                                   two-sided is experimental\n"
+                 << "  --experimental-alternative-views\n"
+                 << "                                   Emit bounded alternative-repeat sidecar [off]\n"
                  << "  --benchmark <file>              Expected sequences for evaluation\n"
                  << "  --settings <path>               Key=value settings file (CLI overrides)\n"
                  << "  --retain-graph                  Keep the large graph after a full run\n"
@@ -168,6 +259,12 @@ Settings parse_arguments(int argc, char* argv[]) {
             settings.retain_cycles = true;
         } else if (arg == "--cleanup-cycles") {
             settings.retain_cycles = false;
+        } else if (arg == "--experimental-alternative-views") {
+            settings.experimental_alternative_views = true;
+        } else if (arg == "--boundary-mode") {
+            if (++i >= argc)
+                throw runtime_error("Error: Missing value for --boundary-mode");
+            settings.set_boundary_mode(argv[i]);
         } else if (arg == "--benchmark") {
             if (++i < argc) {
                 settings.benchmark_file = argv[i];
@@ -197,14 +294,15 @@ Settings parse_arguments(int argc, char* argv[]) {
                             throw runtime_error("Error: Invalid RAM unit. Use B, K, M, or G.");
                     }
 
-                    double total_ram = get_total_system_ram();
+                    double available_ram = get_available_system_ram();
                     if (settings.ram < 1.0) {
                         throw runtime_error("Error: RAM value " + to_string(settings.ram) +
                                             " GB is too low (must be at least 1 GB)");
                     }
-                    if (settings.ram > total_ram) {
+                    if (available_ram >= 0.0 && settings.ram > available_ram) {
                         throw runtime_error("Error: RAM value " + to_string(settings.ram) +
-                                            " GB exceeds system total of " + to_string(total_ram) + " GB");
+                                            " GiB exceeds currently available memory of " +
+                                            to_string(available_ram) + " GiB");
                     }
                 } catch (const invalid_argument&) {
                     throw runtime_error("Error: Invalid RAM value provided: " + ram_input);
@@ -320,10 +418,16 @@ Settings parse_arguments(int argc, char* argv[]) {
         settings.threads = (hc > 2) ? hc - 2 : 1;
     }
     if (settings.ram == 0.0) {
-        settings.ram = get_total_system_ram() * 0.95;
-        if (settings.ram < 1.0) {
+        const double available_ram = get_available_system_ram();
+        if (available_ram < 0.0) {
             cerr << "Warning: could not read system RAM, defaulting to 4G" << endl;
             settings.ram = 4.0;
+        } else {
+            settings.ram = available_ram * 0.85;
+            if (settings.ram < 1.0)
+                throw runtime_error(
+                    "Error: less than 1 GiB is available to this process; "
+                    "free memory or provide a larger container limit");
         }
     }
 
@@ -341,7 +445,12 @@ Settings parse_arguments(int argc, char* argv[]) {
          << "  ▸ Cycles      len " << settings.cycle_finder_settings.cycle_min_length
          << "–" << settings.cycle_finder_settings.cycle_max_length
          << "   threshold ×" << settings.cycle_finder_settings.threshold_multiplicity
-         << "   low-abundance " << (settings.cycle_finder_settings.low_abundance ? "on" : "off") << "\n\n";
+         << "   low-abundance " << (settings.cycle_finder_settings.low_abundance ? "on" : "off") << "\n"
+         << "  ▸ Alternative views  "
+         << (settings.experimental_alternative_views ? "experimental/on" : "off")
+         << "\n  ▸ Boundaries  "
+         << (settings.two_sided_boundaries ? "two-sided (experimental)" : "legacy")
+         << "\n\n";
 
     // Validate input files before creating any directories (skipped when --graph is used)
     if (settings.graph_input.empty() && settings.cycles_input.empty()) {
@@ -441,18 +550,7 @@ int main(int argc, char** argv) {
     Settings settings = parse_arguments(argc, argv);
     string name_of_genome = "test";
     if (check_for_error(settings)){
-        //tell the user which folder we are deleting
-        cout<< "Folder " << settings.output_folder << " will be deleted due to errors." << endl;
-        
-        cout << "Do you want that folder to be removed? (y/n): ";
-        char answer;
-        cin >> answer;
-        if (answer != 'y' && answer != 'Y') {
-            cout << "Exiting the program." << endl;
-            return 1;
-        }
-        cout << "Removing folder: " << settings.output_folder << endl;
-        fs::remove_all(settings.output_folder); 
+        cerr << "Invalid settings; existing output files were preserved.\n";
         return 1;
     }
     // %% PARSE ARGUMENTS %%
@@ -580,15 +678,7 @@ int main(int argc, char** argv) {
 
         Settings settings = parse_arguments(argc, argv);
         if (check_for_error(settings)) {
-            cout << "  Folder " << settings.output_folder << " will be deleted.\n";
-            cout << "  Remove it? (y/n): ";
-            char answer;
-            cin >> answer;
-            if (answer != 'y' && answer != 'Y') {
-                cout << "  Exiting.\n";
-                return 1;
-            }
-            fs::remove_all(settings.output_folder);
+            cerr << "Invalid settings; existing output files were preserved.\n";
             return 1;
         }
 

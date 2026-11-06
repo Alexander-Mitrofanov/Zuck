@@ -25,7 +25,12 @@ struct Settings {
     std::string cycles_input; // Retained legacy cycles.txt (post-process only)
     bool retain_graph = false; // Graphs are large; remove them unless explicitly retained
     bool retain_cycles = true; // Keep compact cycle evidence for fast replay
-    double ram = 0.0; // Maximum RAM usage in gigabytes
+    // Experimental, bounded views over already accepted primary rows.
+    bool experimental_alternative_views = false;
+    // Correct circular representation and infer both repeat boundaries.
+    // Opt-in while independent biological specificity remains unvalidated.
+    bool two_sided_boundaries = false;
+    double ram = 0.0; // Maximum RAM budget in GiB
     size_t threads = 0; // Number of threads to use
     std::string output_folder; // Output directory path. Empty until chosen by CLI or settings file.
     std::string graph_folder; // Folder for graph data
@@ -56,6 +61,14 @@ struct Settings {
         graph_folder = "";
         cycles_folder = "";
         output_file = "";
+    }
+
+    void set_boundary_mode(const std::string& mode) {
+        if (mode == "legacy") two_sided_boundaries = false;
+        else if (mode == "two-sided") two_sided_boundaries = true;
+        else throw std::runtime_error(
+            "Invalid boundary mode: " + mode +
+            " (expected legacy or two-sided)");
     }
 
     // Generate timestamp in YYYY-MM-DD_HH-MM-SS format
@@ -91,10 +104,10 @@ struct Settings {
 
         // Check RAM (using reasonable default max of 128GB if not specified)
         string ram_str = to_string(ram).substr(0, to_string(ram).find(".") + 3);
-        bool ram_valid = ram > 1.0;
+        bool ram_valid = ram >= 1.0;
         settings_message_map["RAM"] = make_pair(ram_valid, 
             ram_valid ? ram_str + " GB" : 
-            "Value " + ram_str + " GB is invalid (must be greater than 1 GB)");
+            "Value " + ram_str + " GB is invalid (must be at least 1 GB)");
 
         // Check threads
         size_t max_t = max_threads();
@@ -236,6 +249,12 @@ struct Settings {
                 std::transform(val.begin(), val.end(), val.begin(), ::tolower);
                 this->retain_cycles = (val == "true" || val == "1" || val == "yes");
             }
+            else if (key == "experimental-alternative-views") {
+                std::transform(val.begin(), val.end(), val.begin(), ::tolower);
+                this->experimental_alternative_views =
+                    (val == "true" || val == "1" || val == "yes");
+            }
+            else if (key == "boundary-mode") { set_boundary_mode(val); }
             else if (key == "spacer-min-length") { this->dna_sequence_settings.spacer_min_length = stoi(val); }
             else if (key == "spacer-max-length") { this->dna_sequence_settings.spacer_max_length = stoi(val); }
             else if (key == "repeat-min-length") { this->dna_sequence_settings.repeat_min_length = stoi(val); }

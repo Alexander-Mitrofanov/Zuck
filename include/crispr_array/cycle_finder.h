@@ -46,6 +46,8 @@ class CycleFinder {
         // visited bitset stored as 64-bit words (1 bit per node). Use atomic builtins on the words to avoid non-copyable std::atomic in vectors.
         vector<vector<uint64_t>> per_thread_visited;
         vector<bool> look_up_table;
+        std::atomic<uint64_t> saturated_start_nodes{0};
+        std::atomic<uint64_t> step_limited_start_nodes{0};
 
         // thread count obtained from settings
 

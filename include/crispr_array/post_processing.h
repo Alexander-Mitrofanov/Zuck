@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <ctime>
 #include "spoa/spoa.hpp"
 #include "core/settings.h"
+#include "crispr_array/alternative_repeat_view.h"
 
 namespace fs = std::filesystem;
 
@@ -26,7 +28,8 @@ namespace fs = std::filesystem;
  * PostProcessor: Aggregate cycle evidence and output CRISPR arrays.
  *
  * Pipeline:
- * 1-4: Glue, group by 23-mer, unanimously extend, and extract spacers
+ * 1-4: Glue, group by 23-mer, extend, and extract spacers. The optional
+ *      two-sided mode reconstructs both repeat portions from circular cores.
  * 5:   Aggregate exact spacer alleles within compatible repeat families
  * 6:   Cluster similar repeats by edit distance, SPOA consensus (front repeat)
  * 7:   Per array: detect tail repeat in spacer suffixes, validate it matches
@@ -62,11 +65,6 @@ private:
     static constexpr int MIN_REPEAT_LEN = 20;
     static constexpr int MIN_SPACER_LEN = 20;
     static constexpr double MIN_MEDIAN_SPACER_REPEAT_RATIO = 0.5;
-    // Maximum allowed similarity (0–1) between a spacer and the consensus repeat.
-    // Real CRISPR spacers are foreign DNA — completely different from the repeat.
-    // Tandem repeat false positives have spacers that look like the repeat.
-    static constexpr double MAX_SPACER_REPEAT_SIMILARITY = 0.5;
-
     struct ConsensusArray {
         std::string consensus;
         std::vector<std::pair<std::string, std::string>> entries;
@@ -240,36 +238,148 @@ private:
     }
 
     /**
-     * Rotate s to start at the position of its highest-frequency GROUP_KMER_SIZE-mer
-     * as measured across all cycles (supplied via freq_map).
+     * Frozen release rotation. The legacy primary pipeline deliberately
+     * rotates the complete glued record, including its 22-base closure, and
+     * keeps the first maximum-frequency 23-mer. Supplemental views must not
+     * change this primary boundary decision.
      */
-    std::string freq_rotation(const std::string& s,
-                              const std::unordered_map<std::string,int>& freq_map) const {
-        int n = (int)s.size();
-        if (n < GROUP_KMER_SIZE) return s;
-        int best_pos = 0, best_freq = 0;
-        for (int i = 0; i + GROUP_KMER_SIZE <= n; ++i) {
-            auto it = freq_map.find(s.substr(i, GROUP_KMER_SIZE));
-            int f = (it != freq_map.end()) ? it->second : 0;
-            if (f > best_freq) { best_freq = f; best_pos = i; }
+    std::string freq_rotation(
+        const std::string& sequence,
+        const std::unordered_map<std::string, int>& frequencies) const {
+        const int length = static_cast<int>(sequence.size());
+        if (length < GROUP_KMER_SIZE) return sequence;
+
+        int best_position = 0;
+        int best_frequency = 0;
+        for (int position = 0;
+             position + GROUP_KMER_SIZE <= length; ++position) {
+            const auto found = frequencies.find(
+                sequence.substr(position, GROUP_KMER_SIZE));
+            const int frequency =
+                found == frequencies.end() ? 0 : found->second;
+            if (frequency > best_frequency) {
+                best_frequency = frequency;
+                best_position = position;
+            }
         }
-        if (best_pos == 0) return s;
-        return s.substr(best_pos) + s.substr(0, best_pos);
+        if (best_position == 0) return sequence;
+        return sequence.substr(best_position) +
+               sequence.substr(0, best_position);
     }
 
-    /**
-     * Returns true if seq is a tandem repeat of a shorter unit (period ≤ len/2)
-     * with at most 15% mismatch. CRISPR repeats are not tandem repeats.
-     */
-    bool is_tandem_repeat(const std::string& seq) const {
-        int n = (int)seq.size();
-        for (int p = 2; p <= n / 2; ++p) {
-            int mismatches = 0;
-            for (int i = p; i < n; ++i)
-                if (seq[i] != seq[i % p]) ++mismatches;
-            if ((double)mismatches / n < 0.15) return true;
+    // A cycle's closure repeats its first 22 bases only for serialization.
+    // Rotate the circular core and break equal-frequency anchor-sequence ties
+    // lexically rather than selecting a different anchor from the record start.
+    std::string circular_freq_rotation(
+        const std::string& core,
+        const std::unordered_map<std::string, int>& frequencies) const {
+        if (core.size() < GROUP_KMER_SIZE) return core;
+        const std::string doubled = core + core;
+        std::size_t best_position = 0;
+        int best_frequency = 0;
+        std::string best_kmer;
+        for (std::size_t position = 0; position < core.size(); ++position) {
+            const std::string kmer = doubled.substr(position, GROUP_KMER_SIZE);
+            const auto found = frequencies.find(kmer);
+            const int frequency = found == frequencies.end() ? 0 : found->second;
+            if (frequency > best_frequency ||
+                (frequency == best_frequency &&
+                 (best_kmer.empty() || kmer < best_kmer))) {
+                best_frequency = frequency;
+                best_position = position;
+                best_kmer = kmer;
+            }
         }
-        return false;
+        return core.substr(best_position) + core.substr(0, best_position);
+    }
+
+    std::vector<SpacerData> extract_two_sided_group(
+        const std::string& anchor,
+        const std::vector<std::string>& group_cycles) {
+        const std::set<std::string> distinct(group_cycles.begin(), group_cycles.end());
+        if (distinct.size() < 2) return {};
+
+        int shortest_core = static_cast<int>(distinct.begin()->size());
+        for (const auto& core : distinct)
+            shortest_core = std::min(shortest_core, static_cast<int>(core.size()));
+
+        // Keep an exact shared-boundary fallback for rows that do not support
+        // the majority repeat. Both sides must leave a complete spacer.
+        int front_length = GROUP_KMER_SIZE;
+        while (front_length < MAX_REPEAT_LEN &&
+               front_length < shortest_core - MIN_SPACER_LEN) {
+            std::set<char> bases;
+            for (const auto& core : distinct) bases.insert(core[front_length]);
+            if (bases.size() != 1) break;
+            ++front_length;
+        }
+        int tail_length = 0;
+        while (front_length + tail_length < MAX_REPEAT_LEN &&
+               front_length + tail_length < shortest_core - MIN_SPACER_LEN) {
+            std::set<char> bases;
+            for (const auto& core : distinct)
+                bases.insert(core[core.size() - 1 - tail_length]);
+            if (bases.size() != 1) break;
+            ++tail_length;
+        }
+
+        // Count distinct rotated cores, rather than repeated traversal records,
+        // for each boundary vote. The repeat prefix before the anchor and its
+        // suffix after the anchor are different portions of the same repeat;
+        // there is no requirement that their sequences match each other.
+        auto majority_base = [&](int position, bool from_end) {
+            std::map<char, std::size_t> counts;
+            for (const auto& core : distinct)
+                ++counts[from_end ? core[core.size() - 1 - position] : core[position]];
+            char best = 'N';
+            std::size_t support = 0;
+            for (const auto& [base, count] : counts) {
+                if (count > support) {
+                    best = base;
+                    support = count;
+                }
+            }
+            return static_cast<double>(support) / distinct.size() >= TAIL_AGREE_THRESH
+                ? best : '\0';
+        };
+
+        std::string majority_front = anchor;
+        std::string majority_tail;
+        while (static_cast<int>(majority_front.size()) < MAX_REPEAT_LEN &&
+               static_cast<int>(majority_front.size()) < shortest_core - MIN_SPACER_LEN) {
+            const char next = majority_base(static_cast<int>(majority_front.size()), false);
+            if (!next) break;
+            majority_front.push_back(next);
+        }
+        while (static_cast<int>(majority_front.size() + majority_tail.size()) < MAX_REPEAT_LEN &&
+               static_cast<int>(majority_front.size() + majority_tail.size()) <
+                   shortest_core - MIN_SPACER_LEN) {
+            const char next = majority_base(static_cast<int>(majority_tail.size()), true);
+            if (!next) break;
+            majority_tail.insert(majority_tail.begin(), next);
+        }
+        const std::string majority_repeat = majority_tail + majority_front;
+
+        std::vector<SpacerData> extracted;
+        for (const auto& core : group_cycles) {
+            int row_front = front_length;
+            int row_tail = tail_length;
+            const std::string proposed_repeat =
+                core.substr(core.size() - majority_tail.size()) +
+                core.substr(0, majority_front.size());
+            if (edit_distance(proposed_repeat, majority_repeat, MAX_TAIL_PREFIX_EDIT_DIST) <=
+                MAX_TAIL_PREFIX_EDIT_DIST) {
+                row_front = static_cast<int>(majority_front.size());
+                row_tail = static_cast<int>(majority_tail.size());
+            }
+            if (static_cast<int>(core.size()) < row_front + row_tail + MIN_SPACER_LEN)
+                continue;
+            extracted.push_back({
+                core.substr(row_front, core.size() - row_front - row_tail),
+                core.substr(core.size() - row_tail) + core.substr(0, row_front),
+                core});
+        }
+        return extracted;
     }
 
 public:
@@ -317,32 +427,71 @@ public:
             {
                 std::ifstream in(input_path);
                 if (!in.is_open()) {
-                    std::cerr << "Error: Cannot open cycles file: " << input_path << std::endl;
-                    return;
+                    throw std::runtime_error("Cannot open cycles file: " + input_path);
                 }
                 std::string line;
+                std::size_t line_number = 0;
                 while (std::getline(in, line)) {
+                    ++line_number;
                     if (!line.empty()) {
                         line.erase(0, line.find_first_not_of(" \t\r\n"));
                         line.erase(line.find_last_not_of(" \t\r\n") + 1);
+                        if (!line.empty() && line.front() == '#') continue;
                         if (!line.empty()) {
                             std::string glued = glue_kmers(line);
+                            const bool valid_dna = std::all_of(
+                                glued.begin(), glued.end(), [](unsigned char base) {
+                                    base = static_cast<unsigned char>(std::toupper(base));
+                                    return base == 'A' || base == 'C' ||
+                                           base == 'G' || base == 'T' ||
+                                           base == 'N';
+                                });
+                            if (!valid_dna)
+                                throw std::runtime_error(
+                                    "Invalid compact/legacy cycle record at " +
+                                    input_path + ":" +
+                                    std::to_string(line_number));
+                            std::transform(glued.begin(), glued.end(), glued.begin(),
+                                           [](unsigned char base) {
+                                               return static_cast<char>(std::toupper(base));
+                                           });
+                            if (settings.two_sided_boundaries && !glued.empty()) {
+                                if (glued.size() < 2 * TAIL_KMER_SIZE ||
+                                    glued.compare(0, TAIL_KMER_SIZE, glued,
+                                                  glued.size() - TAIL_KMER_SIZE,
+                                                  TAIL_KMER_SIZE) != 0)
+                                    throw std::runtime_error(
+                                        "Two-sided boundaries require an exact cycle closure at " +
+                                        input_path + ":" + std::to_string(line_number));
+                                glued.resize(glued.size() - TAIL_KMER_SIZE);
+                            }
                             if (!glued.empty()) raw_cycles.push_back(glued);
                         }
                     }
                 }
+                if (in.bad() || (in.fail() && !in.eof()))
+                    throw std::runtime_error("Error reading cycles file: " + input_path);
             }
 
-            // Build global k-mer frequency map — repeat k-mers are high-frequency.
+            // Legacy mode counts linear 23-mers on the complete glued record,
+            // including its closure. Two-sided mode counts each circular-core
+            // position and applies a deterministic anchor tie break.
             std::unordered_map<std::string,int> kmer_freq;
             kmer_freq.reserve(raw_cycles.size() * 4);
-            for (const auto& seq : raw_cycles)
-                for (int i = 0; i + GROUP_KMER_SIZE <= (int)seq.size(); ++i)
-                    kmer_freq[seq.substr(i, GROUP_KMER_SIZE)]++;
+            for (const auto& seq : raw_cycles) {
+                const std::string counted = settings.two_sided_boundaries ? seq + seq : seq;
+                const int positions = settings.two_sided_boundaries
+                    ? static_cast<int>(seq.size())
+                    : static_cast<int>(seq.size()) - GROUP_KMER_SIZE + 1;
+                for (int position = 0; position < positions; ++position)
+                    ++kmer_freq[counted.substr(position, GROUP_KMER_SIZE)];
+            }
 
             cycles.reserve(raw_cycles.size());
             for (const auto& seq : raw_cycles)
-                cycles.push_back(freq_rotation(seq, kmer_freq));
+                cycles.push_back(settings.two_sided_boundaries
+                    ? circular_freq_rotation(seq, kmer_freq)
+                    : freq_rotation(seq, kmer_freq));
         }
         std::cout << "  ▸ Loaded " << cycles.size() << " cycles" << std::endl;
 
@@ -362,6 +511,11 @@ public:
         std::vector<SpacerData> spacer_data;
 
         for (const auto& [kmer, group_cycles] : groups) {
+            if (settings.two_sided_boundaries) {
+                for (auto& observation : extract_two_sided_group(kmer, group_cycles))
+                    spacer_data.push_back(std::move(observation));
+                continue;
+            }
             int t = 0;
             while (true) {
                 std::unordered_set<char> chars;
@@ -525,6 +679,10 @@ public:
         consensus_arrays.clear();
         crispr_arrays.clear();
 
+        std::size_t total_spacer_alleles = 0;
+        std::size_t total_spacer_components = 0;
+        std::size_t largest_spacer_component = 0;
+
         for (const auto& rep_indices : repeat_clusters) {
             std::vector<std::pair<std::string, int>> weighted_repeats;
             std::map<std::string, std::map<std::string, std::size_t>>
@@ -542,6 +700,7 @@ public:
             alleles.reserve(family_spacer_support.size());
             for (const auto& [spacer, repeat_support] : family_spacer_support)
                 alleles.push_back(spacer);
+            total_spacer_alleles += alleles.size();
 
             // Keep the established compact collapse, but scope it to this
             // bounded repeat family so components cannot steal evidence from
@@ -558,6 +717,14 @@ public:
                 }
             }
 
+            std::vector<std::size_t> allele_support(alleles.size(), 0);
+            for (int idx = 0; idx < static_cast<int>(alleles.size()); ++idx)
+                for (const auto& [repeat, support] :
+                     family_spacer_support[alleles[idx]])
+                    allele_support[idx] += support;
+
+            // Frozen v1.0.0 collapse: any shared 23-mer joins the full
+            // transitive component.
             std::vector<int> allele_parent(alleles.size());
             std::iota(allele_parent.begin(), allele_parent.end(), 0);
             std::function<int(int)> allele_find = [&](int x) -> int {
@@ -573,15 +740,23 @@ public:
                 for (std::size_t i = 1; i < indices.size(); ++i)
                     allele_unite(indices.front(), indices[i]);
 
-            std::map<int, std::vector<int>> allele_clusters;
+            std::map<int, std::vector<int>> transitive_clusters;
             for (int idx = 0; idx < static_cast<int>(alleles.size()); ++idx)
-                allele_clusters[allele_find(idx)].push_back(idx);
+                transitive_clusters[allele_find(idx)].push_back(idx);
 
-            std::vector<std::size_t> allele_support(alleles.size(), 0);
-            for (int idx = 0; idx < static_cast<int>(alleles.size()); ++idx)
-                for (const auto& [repeat, support] :
-                     family_spacer_support[alleles[idx]])
-                    allele_support[idx] += support;
+            std::vector<std::vector<int>> allele_clusters;
+            allele_clusters.reserve(transitive_clusters.size());
+            for (auto& [root, members] : transitive_clusters)
+                allele_clusters.push_back(std::move(members));
+            std::sort(allele_clusters.begin(), allele_clusters.end(),
+                      [&](const auto& lhs, const auto& rhs) {
+                          return alleles[lhs.front()] < alleles[rhs.front()];
+                      });
+
+            total_spacer_components += allele_clusters.size();
+            for (const auto& cluster : allele_clusters)
+                largest_spacer_component =
+                    std::max(largest_spacer_component, cluster.size());
 
             // Start from the best-supported observation, then remove at most
             // eight exact terminal overhang bases by selecting the shortest
@@ -590,7 +765,7 @@ public:
             std::vector<std::pair<std::string, std::string>> merged_entries;
             std::map<std::string, std::map<std::string, std::size_t>>
                 emitted_spacer_support;
-            for (const auto& [root, cluster] : allele_clusters) {
+            for (const auto& cluster : allele_clusters) {
                 int representative = cluster.front();
                 for (int candidate_idx : cluster) {
                     if (allele_support[candidate_idx] >
@@ -608,6 +783,9 @@ public:
 
                 const int support_anchor = representative;
                 for (int candidate_idx : cluster) {
+                    // Corrected extraction already assigns both boundaries.
+                    // Reapplying terminal shortening can choose an error allele.
+                    if (settings.two_sided_boundaries) break;
                     if (alleles[candidate_idx].size() >=
                             alleles[representative].size() ||
                         alleles[support_anchor].size() -
@@ -637,7 +815,9 @@ public:
 
                 std::string best_repeat;
                 std::size_t best_support = 0;
-                for (const auto& [repeat, support] : repeat_support) {
+                const auto& chosen_repeat_support = settings.two_sided_boundaries
+                    ? family_spacer_support.at(spacer) : repeat_support;
+                for (const auto& [repeat, support] : chosen_repeat_support) {
                     if (support > best_support ||
                         (support == best_support &&
                          (best_repeat.empty() || repeat < best_repeat))) {
@@ -664,7 +844,7 @@ public:
             for (const auto& [rv, sp] : merged_entries)
                 all_spacers.push_back(sp);
 
-            int tail_len = detect_tail_length(all_spacers);
+            int tail_len = settings.two_sided_boundaries ? 0 : detect_tail_length(all_spacers);
             std::string tail_consensus;
             bool tail_valid = false;
 
@@ -766,6 +946,11 @@ public:
             crispr_arrays[full_consensus] = spacers;
         }
 
+        std::cout << "  ▸ Spacer components (transitive): "
+                  << total_spacer_components << " from "
+                  << total_spacer_alleles << " alleles; largest="
+                  << largest_spacer_component << std::endl;
+
         // Different bounded raw-repeat families can converge to the same
         // final repeat consensus. Coalesce those blocks deterministically so
         // one biological family is not reported twice.
@@ -796,6 +981,174 @@ public:
         }
 
         // ==========================================================
+        // Experimental supplemental alternative-repeat-allele views
+        // ==========================================================
+        // These are deterministic views over rows already accepted by the
+        // frozen primary pipeline. They are deliberately created only after
+        // final coalescing, so they cannot influence primary consensus,
+        // clustering, filtering, row order, or Array IDs.
+        const std::size_t primary_array_count = consensus_arrays.size();
+        std::size_t primary_row_count = 0;
+        for (const auto& array : consensus_arrays)
+            primary_row_count += array.entries.size();
+
+        using CanonicalSpacerMap = std::map<std::string, std::string>;
+        std::vector<std::set<std::string>> parent_spacers(
+            primary_array_count);
+        std::map<
+            std::string,
+            std::map<std::size_t, CanonicalSpacerMap>>
+            allele_observations;
+        std::map<std::string, std::set<std::size_t>>
+            canonical_repeat_parents;
+
+        for (std::size_t parent = 0;
+             parent < primary_array_count; ++parent) {
+            const auto& array = consensus_arrays[parent];
+            canonical_repeat_parents[
+                alternative_repeat_view::canonical_sequence(
+                    array.consensus)].insert(parent);
+            for (const auto& [repeat, spacer] : array.entries) {
+                canonical_repeat_parents[
+                    alternative_repeat_view::canonical_sequence(
+                        repeat)].insert(parent);
+                const std::string canonical =
+                    alternative_repeat_view::canonical_spacer(spacer);
+                parent_spacers[parent].insert(canonical);
+                if (repeat == array.consensus) continue;
+
+                // Retain an exact observed orientation. If both orientations
+                // were accepted upstream, use the lexical observation rather
+                // than synthesizing a new sequence.
+                auto& observations =
+                    allele_observations[repeat][parent];
+                if (spacer.size() <
+                    static_cast<std::size_t>(MIN_SPACER_AFTER_TRIM))
+                    continue;
+                auto [found, inserted] =
+                    observations.emplace(canonical, spacer);
+                if (!inserted && spacer < found->second)
+                    found->second = spacer;
+            }
+        }
+
+        struct SupplementalView {
+            std::size_t parent = 0;
+            std::string consensus;
+            std::vector<std::pair<std::string, std::string>> entries;
+            alternative_repeat_view::CyclicMatch match;
+        };
+        std::vector<SupplementalView> eligible_views;
+
+        for (const auto& [allele, observations_by_parent] :
+             allele_observations) {
+            // A repeat allele shared by multiple accepted parents is not a
+            // label-free discriminator and cannot create a supplemental view.
+            if (observations_by_parent.size() != 1) continue;
+            const auto& [parent, observations] =
+                *observations_by_parent.begin();
+            const auto& parent_array = consensus_arrays[parent];
+
+            const auto canonical_parents = canonical_repeat_parents.find(
+                alternative_repeat_view::canonical_sequence(allele));
+            if (canonical_parents == canonical_repeat_parents.end() ||
+                canonical_parents->second.size() != 1 ||
+                !canonical_parents->second.count(parent))
+                continue;
+
+            if (!alternative_repeat_view::eligible_allele(
+                    allele, parent_array.consensus, observations.size(),
+                    parent_spacers[parent].size()))
+                continue;
+
+            SupplementalView view;
+            view.parent = parent;
+            view.consensus = allele;
+            view.match = alternative_repeat_view::oriented_cyclic_match(
+                allele, parent_array.consensus);
+            std::set<std::string> emitted_spacers;
+            for (const auto& [observed_repeat, observed_spacer] :
+                 parent_array.entries) {
+                if (observed_repeat != allele) continue;
+                const std::string canonical =
+                    alternative_repeat_view::canonical_spacer(
+                        observed_spacer);
+                if (!observations.count(canonical) ||
+                    !emitted_spacers.insert(canonical).second)
+                    continue;
+                view.entries.emplace_back(allele, observed_spacer);
+            }
+            eligible_views.push_back(std::move(view));
+        }
+
+        std::sort(eligible_views.begin(), eligible_views.end(),
+                  [](const SupplementalView& lhs,
+                     const SupplementalView& rhs) {
+                      if (lhs.parent != rhs.parent)
+                          return lhs.parent < rhs.parent;
+                      return lhs.consensus < rhs.consensus;
+                  });
+
+        // Integer floors make the caps strict for every primary output size.
+        const std::size_t supplemental_array_budget =
+            primary_array_count / 100;        // <= 1.00%
+        const std::size_t supplemental_row_budget =
+            primary_row_count / 400;          // <= 0.25%
+        std::size_t supplemental_rows = 0;
+        std::size_t supplemental_arrays = 0;
+        std::set<std::string> supplemental_spacers;
+
+        for (const auto& view : eligible_views) {
+            if (!settings.experimental_alternative_views) break;
+            if (supplemental_arrays >= supplemental_array_budget) break;
+            if (supplemental_rows + view.entries.size() >
+                supplemental_row_budget)
+                continue; // Never truncate a biologically defined subset.
+
+            bool duplicates_another_view = false;
+            for (const auto& [repeat, spacer] : view.entries) {
+                (void)repeat;
+                if (supplemental_spacers.count(
+                        alternative_repeat_view::canonical_spacer(spacer))) {
+                    duplicates_another_view = true;
+                    break;
+                }
+            }
+            if (duplicates_another_view) continue;
+
+            consensus_arrays.push_back(
+                {view.consensus, view.entries});
+            ++supplemental_arrays;
+            supplemental_rows += view.entries.size();
+            for (const auto& [repeat, spacer] : view.entries) {
+                (void)repeat;
+                supplemental_spacers.insert(
+                    alternative_repeat_view::canonical_spacer(spacer));
+            }
+
+            std::ostringstream provenance;
+            provenance << "  ▸ Supplemental Array_"
+                       << consensus_arrays.size() << " <- Array_"
+                       << (view.parent + 1)
+                       << "  allele=" << view.consensus
+                       << "  spacers=" << view.entries.size()
+                       << "  subset=" << view.entries.size() << "/"
+                       << parent_spacers[view.parent].size()
+                       << "  identity=" << std::fixed
+                       << std::setprecision(6) << view.match.identity
+                       << "  coverage=" << view.match.reciprocal_coverage;
+            std::cout << provenance.str() << std::endl;
+        }
+
+        if (settings.experimental_alternative_views) {
+            std::cout << "  ▸ Experimental alternative-repeat sidecar: "
+                      << supplemental_arrays << " arrays / "
+                      << supplemental_rows << " rows"
+                      << " (caps " << supplemental_array_budget << " / "
+                      << supplemental_row_budget << ")" << std::endl;
+        }
+
+        // ==========================================================
         // Step 8: Output
         // ==========================================================
         // Generate timestamp string for file header
@@ -805,37 +1158,56 @@ public:
         ts << std::put_time(std::localtime(&now_t), "%Y-%m-%d %H:%M:%S");
         std::string timestamp_str = ts.str();
 
-        int total_spacers_final = 0;
-        for (const auto& arr : consensus_arrays)
-            total_spacers_final += (int)arr.entries.size();
-
         int file_index = 1;
         int current_lines = 0;
         std::ofstream out;
+        std::string output_filename;
 
-        auto open_new_file = [&]() {
-            if (out.is_open()) out.close();
-            std::string filename = output_dir + "/CRISPR_Arrays_" +
-                                   std::to_string(file_index) + ".txt";
-            out.open(filename);
+        auto check_output = [&]() {
+            if (!out)
+                throw std::runtime_error("Error writing arrays file: " + output_filename);
+        };
+        auto close_output = [&]() {
+            if (!out.is_open()) return;
+            check_output();
+            out.close();
+            check_output();
+        };
+
+        auto open_new_file = [&](std::size_t header_arrays,
+                                 std::size_t header_spacers,
+                                 bool experimental_sidecar = false) {
+            close_output();
+            output_filename = output_dir + "/CRISPR_Arrays_" +
+                              std::to_string(file_index) + ".txt";
+            out.open(output_filename);
+            if (!out.is_open() || !out)
+                throw std::runtime_error("Cannot open arrays file for writing: " + output_filename);
             ++file_index;
             current_lines = 0;
             // Write file header
             out << "# my_mcaat — CRISPR Array Output\n";
             out << "# Generated : " << timestamp_str << "\n";
-            out << "# Arrays    : " << consensus_arrays.size() << "\n";
-            out << "# Spacers   : " << total_spacers_final << "\n\n";
-            std::cout << "  ▸ Writing " << filename << std::endl;
+            out << "# Arrays    : " << header_arrays << "\n";
+            out << "# Spacers   : " << header_spacers << "\n";
+            if (settings.two_sided_boundaries)
+                out << "# Boundary  : two-sided (experimental)\n";
+            if (experimental_sidecar)
+                out << "# Kind      : experimental alternative-repeat views\n";
+            out << "\n";
+            check_output();
+            std::cout << "  ▸ Writing " << output_filename << std::endl;
         };
 
-        open_new_file();
-
         int array_num = 0;
-        for (const auto& arr : consensus_arrays) {
+        auto write_array = [&](const ConsensusArray& arr,
+                               std::size_t header_arrays,
+                               std::size_t header_spacers,
+                               bool experimental_sidecar) {
             ++array_num;
             int lines_needed = 2 + (int)arr.entries.size() + 1;
             if (current_lines + lines_needed > MAX_LINES_PER_FILE && current_lines > 0)
-                open_new_file();
+                open_new_file(header_arrays, header_spacers, experimental_sidecar);
 
             out << ">Array_" << array_num << "  spacers=" << arr.entries.size() << "\n";
             out << arr.consensus << "\n";
@@ -851,13 +1223,36 @@ public:
 
             out << "\n";
             ++current_lines;
+            check_output();
+        };
+
+        // Preserve the release byte structure of all primary files: the
+        // primary global counts and line splitting are exactly the same as if
+        // supplemental views did not exist.
+        open_new_file(primary_array_count, primary_row_count);
+        for (std::size_t index = 0;
+             index < primary_array_count; ++index) {
+            write_array(consensus_arrays[index],
+                        primary_array_count, primary_row_count, false);
         }
 
-        if (out.is_open()) out.close();
+        // Supplemental views always start in the next numbered file, even if
+        // the final primary file has room. The same rule naturally follows
+        // any number of primary files and supports supplemental file splits.
+        if (supplemental_arrays > 0) {
+            close_output();
+            open_new_file(supplemental_arrays, supplemental_rows, true);
+            for (std::size_t index = primary_array_count;
+                 index < consensus_arrays.size(); ++index) {
+                write_array(consensus_arrays[index],
+                            supplemental_arrays, supplemental_rows, true);
+            }
+        }
 
-        int total_spacers = 0;
-        for (const auto& arr : consensus_arrays)
-            total_spacers += (int)arr.entries.size();
+        close_output();
+
+        const std::size_t total_spacers =
+            primary_row_count + supplemental_rows;
 
         std::cout << "  ▸ Arrays: " << consensus_arrays.size()
                   << "   Spacers: " << total_spacers

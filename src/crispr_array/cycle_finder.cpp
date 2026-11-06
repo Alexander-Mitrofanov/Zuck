@@ -1,4 +1,5 @@
 #include "crispr_array/cycle_finder.h"
+#include "crispr_array/bounded_cycle_search.h"
 #include "crispr_array/filters.h"
 #include "core/settings.h"
 #include <stdexcept>
@@ -154,6 +155,7 @@ vector<vector<uint64_t>> CycleFinder::FindCycle(uint64_t start_node, vector<uint
     while (!stack.empty() && !saturated) {
         steps_counter += 1;
         if (steps_counter > 10000000) {
+            step_limited_start_nodes.fetch_add(1, std::memory_order_relaxed);
             break;
         }
         
@@ -162,6 +164,10 @@ vector<vector<uint64_t>> CycleFinder::FindCycle(uint64_t start_node, vector<uint
         for (auto neighbor : neighbors) {
             current_node = neighbor;
             if (current_node == start_node ) {
+                // Consume closure once, just like an explored outgoing edge.
+                // Otherwise returning from another branch records this same
+                // path again and spends the cycle cap on duplicate evidence.
+                stack.back().erase(neighbor);
                 backtrack_lengths.back() = 1;
                 if (path.size() > static_cast<size_t>(this->settings.cycle_finder_settings.cycle_min_length)) {
                     cycles.push_back(path);
@@ -171,6 +177,7 @@ vector<vector<uint64_t>> CycleFinder::FindCycle(uint64_t start_node, vector<uint
                         // implementation erased all 500 retained cycles here,
                         // turning saturation into a complete false negative.
                         saturated = true;
+                        saturated_start_nodes.fetch_add(1, std::memory_order_relaxed);
                         flag=false;
                         break;
                     }
@@ -200,14 +207,14 @@ vector<vector<uint64_t>> CycleFinder::FindCycle(uint64_t start_node, vector<uint
                 backtrack_lengths.back() = min(backtrack_lengths.back(), backtrack_length);
             }
             if (backtrack_length < this->settings.cycle_finder_settings.cycle_max_length) {
-                vector<pair<int, int>> relax_stack;
+                vector<pair<int, uint64_t>> relax_stack;
                 relax_stack.push_back(make_pair(backtrack_length, v));
 
                 phmap::flat_hash_set<uint64_t> path_set(path.begin(), path.end());
 
                 while (!relax_stack.empty()) {
                     int bl = relax_stack.back().first;
-                    int u = relax_stack.back().second;
+                    uint64_t u = relax_stack.back().second;
                     relax_stack.pop_back();
                     if (lock.try_emplace(u, this->settings.cycle_finder_settings.cycle_max_length).first->second < this->settings.cycle_finder_settings.cycle_max_length - bl + 1) {
                         lock[u] = this->settings.cycle_finder_settings.cycle_max_length - bl + 1;
@@ -256,103 +263,19 @@ vector<vector<uint64_t>> CycleFinder::FindCycleUtil(uint64_t start_node) {
 }
 /**
  * @brief Performs a depth-limited search to determine if a path exists between two nodes within a certain depth.
- * Optimized using megahit's graph traversal patterns.
+ * Breadth-first visitation preserves shorter routes and includes closure
+ * at the configured maximum cycle length.
  */
 bool CycleFinder::DepthLevelSearch(uint64_t start, uint64_t target, int limit, int& reached_depth) {
-    // Megahit-style memory pool: Dynamic thread-local pools for reuse (no heuristic sizing)
-    struct StackEntry {
-        uint64_t node;
-        int depth;
+    static thread_local my_mcaat::BoundedCycleWorkspace<
+        phmap::flat_hash_set<uint64_t>> workspace;
+    auto neighbors = [this](uint64_t node) {
+        SmallNodeSet outgoings;
+        this->_GetOutgoings(node, outgoings);
+        return outgoings;
     };
-    
-    static thread_local std::vector<StackEntry> dls_stack_pool;
-    static thread_local phmap::flat_hash_set<uint64_t> dls_visited_pool;
-    
-    // Clear but keep capacity (megahit memory reuse pattern) - no fixed reserve
-    dls_stack_pool.clear();
-    dls_visited_pool.clear();
-    
-    // Reserve reasonable initial capacity to avoid reallocations
-    if (dls_stack_pool.capacity() == 0) {
-        dls_stack_pool.reserve(64);  // Small initial reserve
-    }
-
-    // Use pooled structures
-    auto& dls_stack = dls_stack_pool;
-    auto& dls_visited = dls_visited_pool;
-
-    // Cache values for faster comparison
-    const uint64_t target_node = target;
-    const uint64_t start_node = start;
-
-    dls_stack.push_back({start_node, 0});
-    reached_depth = 0;
-
-    while (!dls_stack.empty()) {
-        StackEntry current = dls_stack.back();
-        dls_stack.pop_back();
-        uint64_t v = current.node;
-        int depth = current.depth;
-
-        // Check if the current node is valid
-        if (!this->settings.sdbg->IsValidEdge(v)) {
-            continue;
-        }
-
-        // Update reached depth
-        reached_depth = depth;
-
-        // Get neighbors using SDBG API directly (megahit's pattern) - moved up for better branch prediction
-        // Use megahit's efficient zero-degree check for early termination
-        if (__builtin_expect(this->settings.sdbg->EdgeOutdegreeZero(v), 0)) {
-            continue;
-        }
-        
-        int outdegree = this->settings.sdbg->EdgeOutdegree(v);
-
-        // Use fixed-size array for neighbors (megahit's pattern)
-        uint64_t neighbors[MAX_EDGE_COUNT];
-        int flag = this->settings.sdbg->OutgoingEdges(v, neighbors);
-
-        if (__builtin_expect(flag == -1, 0)) {
-            continue;
-        }
-
-        // Prefetch neighbors for better cache performance
-        __builtin_prefetch(&neighbors[0], 0, 1);
-
-        // Exceeded depth limit - check after we know we have neighbors
-        if (__builtin_expect(depth >= limit, 0)) {
-            continue;
-        }
-
-        // Process all neighbors to maintain correctness (removed faulty simple path optimization)
-        // Process neighbors in forward order (SIMD-friendly pattern from megahit)
-        // Unroll loop for small outdegrees to reduce overhead
-            // Unrolled loop for common case (de Bruijn graph max degree = 4)
-            for (int i = 0; i < outdegree; ++i) {
-                uint64_t neighbor = neighbors[i];
-                // Check if the neighbor is valid
-                if (!this->settings.sdbg->IsValidEdge(neighbor)) {
-                    continue;
-                }
-                auto visited_it = dls_visited.find(neighbor);
-                bool not_visited = (visited_it == dls_visited.end());
-                bool is_start_revisit = (neighbor == start_node && depth > 0);
-                
-                if (__builtin_expect(not_visited || is_start_revisit, 1)) {
-                    dls_visited.insert(neighbor);
-                    dls_stack.push_back({neighbor, depth + 1});
-                }
-            }
-        
-        // Megahit-style aggressive early cycle detection
-        if (__builtin_expect(v == target_node && depth > 1, 0)) {
-            return true;  // Found cycle - exit immediately
-        }
-    }
-
-    return false;
+    return my_mcaat::HasBoundedPath(start, target, limit, neighbors,
+                                   workspace, reached_depth);
 }
 
 
@@ -458,6 +381,12 @@ size_t CycleFinder::ChunkStartNodes(map<int, vector<uint64_t>, greater<int>>& st
         }
     }
 
+    // Dynamic scanning assigns chunks to workers in an unpredictable order.
+    // Sort before the static traversal partition so a fixed thread count has
+    // a reproducible start order and visited-state history.
+    for (auto& bucket : start_nodes_chunked) {
+        std::sort(bucket.second.begin(), bucket.second.end());
+    }
    //writeStartNodesToFile(start_nodes_chunked, "start_nodes.txt");
     size_t sum_of_all_quantities_in_all_chunks = 0;
     for (const auto& [key, value] : start_nodes_chunked) {
@@ -558,6 +487,12 @@ int CycleFinder::FindApproximateCRISPRArrays()
         // Completed cycle enumeration
         std::cout << "  ▸ Total: " << cumulative << " cycles across "
               << this->results.size() << " start nodes" << std::endl;
+        std::cout << "  ▸ Saturated starts (" << cluster_bounds << "-cycle cap): "
+                  << saturated_start_nodes.load(std::memory_order_relaxed)
+                  << std::endl;
+        std::cout << "  ▸ Step-limited starts (10000000-step cap): "
+                  << step_limited_start_nodes.load(std::memory_order_relaxed)
+                  << std::endl;
 
     const std::string cycles_path = this->settings.output_folder + "/cycles.txt";
     this->writeMapToFile(this->results, cycles_path);
@@ -571,27 +506,90 @@ void CycleFinder::writeMapToFile(
 {
     std::ofstream out(filename);
     if (!out.is_open()) {
-        std::cerr << "Error: Cannot write cycles to: " << filename << std::endl;
-        return;
+        throw std::runtime_error("Cannot write cycles to: " + filename);
     }
+    // Lossless compact representation: the first k-mer followed by the one
+    // new base contributed by each later graph edge. Keep it headerless so a
+    // v1.0.0 parser, which already accepts one-token glued records, can replay
+    // it too. If a future graph path violates the k-1 overlap invariant, fall
+    // back to that record's legacy space-separated k-mers instead of silently
+    // changing its sequence.
+
     const size_t k = this->settings.sdbg->k();
     std::vector<uint8_t> seq(k);
-    for (const auto& [start_node, cycle_vec] : cycles) {
-        for (const auto& cycle : cycle_vec) {
-            for (size_t i = 0; i < cycle.size(); ++i) {
-                seq.assign(k, 0);
-                this->settings.sdbg->GetLabel(cycle[i], seq.data());
-                std::string label(k, 'N');
-                for (size_t j = 0; j < k; ++j) {
-                    uint8_t c = seq[j];
-                    label[j] = (c >= 1 && c <= 4) ? "ACGT"[c - 1] : 'N';
+    std::vector<uint64_t> start_nodes;
+    start_nodes.reserve(cycles.size());
+    for (const auto& entry : cycles) start_nodes.push_back(entry.first);
+    std::sort(start_nodes.begin(), start_nodes.end());
+
+    std::string output_buffer;
+    output_buffer.reserve(8 * 1024 * 1024);
+    auto flush_buffer = [&]() {
+        out.write(output_buffer.data(),
+                  static_cast<std::streamsize>(output_buffer.size()));
+        if (!out)
+            throw std::runtime_error("Error writing cycles to: " + filename);
+        output_buffer.clear();
+    };
+    std::size_t legacy_fallback_records = 0;
+
+    auto node_label = [&](uint64_t node) {
+        seq.assign(k, 0);
+        this->settings.sdbg->GetLabel(node, seq.data());
+        std::string label(k, 'N');
+        for (size_t j = 0; j < k; ++j) {
+            const uint8_t c = seq[j];
+            label[j] = (c >= 1 && c <= 4) ? "ACGT"[c - 1] : 'N';
+        }
+        return label;
+    };
+
+    for (uint64_t start_node : start_nodes) {
+        const auto& cycle_vec = cycles.at(start_node);
+        std::vector<const std::vector<uint64_t>*> ordered_cycles;
+        ordered_cycles.reserve(cycle_vec.size());
+        for (const auto& cycle : cycle_vec) ordered_cycles.push_back(&cycle);
+        std::sort(ordered_cycles.begin(), ordered_cycles.end(),
+                  [](const auto* lhs, const auto* rhs) { return *lhs < *rhs; });
+
+        for (const auto* cycle_ptr : ordered_cycles) {
+            const auto& cycle = *cycle_ptr;
+            if (cycle.empty()) continue;
+
+            std::string previous = node_label(cycle.front());
+            std::string record = previous;
+            bool compact = true;
+            for (size_t i = 1; i < cycle.size(); ++i) {
+                std::string current = node_label(cycle[i]);
+                if (!std::equal(previous.begin() + 1, previous.end(),
+                                current.begin())) {
+                    compact = false;
+                    break;
                 }
-                if (i > 0) out << ' ';
-                out << label;
+                record.push_back(current.back());
+                previous = std::move(current);
             }
-            out << '\n';
+
+            if (!compact) {
+                ++legacy_fallback_records;
+                record.clear();
+                for (std::size_t i = 0; i < cycle.size(); ++i) {
+                    if (i != 0) record.push_back(' ');
+                    record += node_label(cycle[i]);
+                }
+            }
+            record.push_back('\n');
+            output_buffer += record;
+            if (output_buffer.size() >= 8 * 1024 * 1024) flush_buffer();
         }
     }
+    if (!output_buffer.empty()) flush_buffer();
+    out.close();
+    if (!out)
+        throw std::runtime_error("Error closing cycles file: " + filename);
+    if (legacy_fallback_records != 0)
+        std::cout << "  ▸ Compact-overlap fallbacks: "
+                  << legacy_fallback_records << std::endl;
     std::cout << "  ▸ Cycles saved: " << filename << std::endl;
 }
 

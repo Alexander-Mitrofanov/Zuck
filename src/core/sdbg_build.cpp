@@ -1,22 +1,13 @@
 #include "core/sdbg_build.h"
 #include <cstdio>
-#include <unistd.h>
-#include <fcntl.h>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 
 SDBGBuild::SDBGBuild(Settings settings) : settings(settings)
 {
-    // Suppress MEGAHIT's INFO/WARN messages to stderr during graph build
-    int saved_stderr = dup(STDERR_FILENO);
-    int devnull = open("/dev/null", O_WRONLY);
-    dup2(devnull, STDERR_FILENO);
-    close(devnull);
-
     this->BuildLib();
     this->BuildSDBG();
-
-    // Restore stderr
-    dup2(saved_stderr, STDERR_FILENO);
-    close(saved_stderr);
 }
 
 SDBGBuild::~SDBGBuild()
@@ -206,7 +197,18 @@ void SDBGBuild::BuildSDBG()
     // megahit_core read2sdbg --host_mem 128000000000 --read_lib_file outfile_prefix -m 1 -k 21 --num_cpu_threads 48
     // convert double to string 
 
-    std::string host_mem = std::to_string(settings.ram);
+    // Settings stores the user-facing value in GiB; MEGAHIT's host_mem API
+    // consumes bytes. v1.0.0 passed values such as "8.0" as eight bytes,
+    // forcing MEGAHIT into its fallback minimum-memory plan.
+    const long double host_mem_exact =
+        static_cast<long double>(settings.ram) * 1024.0L * 1024.0L * 1024.0L;
+    if (!std::isfinite(static_cast<double>(host_mem_exact)) ||
+        host_mem_exact < 1.0L ||
+        host_mem_exact > static_cast<long double>(std::numeric_limits<int64_t>::max())) {
+        throw std::runtime_error("Requested graph memory is outside the supported range");
+    }
+    const int64_t host_mem_bytes = static_cast<int64_t>(host_mem_exact);
+    std::string host_mem = std::to_string(host_mem_bytes);
     std::string num_cpu_threads = std::to_string(settings.threads);
     std::string read2sdbg = "read2sdbg";
     std::string host_mem_flag = "--host_mem";
@@ -225,6 +227,9 @@ void SDBGBuild::BuildSDBG()
         "--num_cpu_threads", num_cpu_threads,
         "--o", settings.graph_folder + "/graph"
     };
+
+    std::cout << "  ▸ MEGAHIT memory budget: " << host_mem_bytes
+              << " bytes (" << settings.ram << " GiB)" << std::endl;
 
     // Create a vector of char* to pass to the function
     std::vector<char*> argv;

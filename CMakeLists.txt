@@ -36,6 +36,7 @@ find_package(OpenMP REQUIRED)
 option(STATIC_BUILD "Build static executable"      OFF)
 option(SANITIZER    "Enable address/UB sanitizers" OFF)
 option(ENABLE_DEBUG "Enable DEBUG macro (dev main)" OFF)
+option(BUILD_TESTING "Build MY_MCAAT tests" OFF)
 
 if(ENABLE_DEBUG)
     add_definitions(-DDEBUG)
@@ -68,7 +69,12 @@ endif()
 
 set(MEGAHIT_SRC "${CMAKE_SOURCE_DIR}/libs/megahit/src")
 
+# The vendored kseqpp snapshot does not include its optional test directory.
+# Keep its tests disabled while retaining the top-level BUILD_TESTING choice.
+set(MY_MCAAT_SAVED_BUILD_TESTING ${BUILD_TESTING})
+set(BUILD_TESTING OFF)
 add_subdirectory(libs/kseqpp)
+set(BUILD_TESTING ${MY_MCAAT_SAVED_BUILD_TESTING})
 
 set(spoa_build_exe   OFF CACHE BOOL "" FORCE)
 set(spoa_build_tests OFF CACHE BOOL "" FORCE)
@@ -126,6 +132,27 @@ target_link_libraries(my_mcaat PRIVATE
     fmt::fmt
     OpenMP::OpenMP_CXX
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(test_bounded_cycle_search
+        tests/test_bounded_cycle_search.cpp)
+    target_include_directories(test_bounded_cycle_search PRIVATE include)
+    add_test(NAME bounded_cycle_search COMMAND test_bounded_cycle_search)
+    add_executable(test_alternative_repeat_view
+        tests/test_alternative_repeat_view.cpp)
+    target_include_directories(test_alternative_repeat_view PRIVATE include)
+    add_test(NAME alternative_repeat_view COMMAND test_alternative_repeat_view)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME two_sided_boundaries
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_two_sided_boundaries.py $<TARGET_FILE:my_mcaat>)
+        add_test(NAME cycle_enumeration
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cycle_enumeration.py)
+        add_test(NAME cli_io_errors
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_io.py $<TARGET_FILE:my_mcaat>)
+    endif()
+endif()
 
 if(ENABLE_DEBUG)
     target_link_libraries(my_mcaat PRIVATE nlohmann_json::nlohmann_json)
