@@ -1,0 +1,12 @@
+import {cp,mkdir,readFile,writeFile} from 'node:fs/promises';
+import {makeApi} from '../api.js';
+const base=process.env.ZUCK_API_BASE_URL;
+if (!base || !base.startsWith('https://')) throw new Error('ZUCK_API_BASE_URL must be an exact HTTPS API address.');
+makeApi(base);
+await mkdir('dist',{recursive:true});
+for (const file of ['index.html','style.css','app.js','api.js','assets','examples','LICENSE']) await cp(file,`dist/${file}`,{recursive:true});
+await writeFile('dist/config.js',`window.ZUCK_CONFIG = ${JSON.stringify({apiBase:base})};\n`);
+await writeFile('dist/.nojekyll','');
+const index=await readFile('dist/index.html','utf8');
+await writeFile('dist/index.html',index.replace(' http://127.0.0.1:8001',''));
+console.log('Static Zuck frontend ready.');

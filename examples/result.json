@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "counts": {
+    "anchor_groups": 1,
+    "arrays_before_coalescing": 1,
+    "bounded_repeat_clusters": 1,
+    "coalesced_strand_equivalent_arrays": 0,
+    "confidence_ambiguous_rows": 0,
+    "confidence_capped_patterns": 0,
+    "confidence_context_supported_rows": 0,
+    "confidence_input_units": 0,
+    "confidence_patterns": 25,
+    "confidence_quality_read_records": 0,
+    "confidence_read_records": 0,
+    "confidence_rows": 12,
+    "exact_repeat_spacer_alleles": 12,
+    "extracted_spacer_observations": 12,
+    "filtered_fewer_than_two_components": 0,
+    "filtered_fewer_than_two_spacers_after_trim": 0,
+    "filtered_repeat_length": 0,
+    "filtered_short_spacer_singletons": 0,
+    "filtered_spacer_repeat_ratio": 0,
+    "largest_spacer_component": 1,
+    "loaded_cycle_records": 12,
+    "primary_arrays": 1,
+    "primary_entries": 12,
+    "read_linkage_applied": 0,
+    "repeat_variants": 1,
+    "spacer_alleles_in_families": 12,
+    "spacer_components": 12,
+    "supplemental_arrays": 0,
+    "supplemental_entries": 0,
+    "terminal_variant_rows_rescued": 0
+  },
+  "arrays": [
+    {
+      "array_id": "Array_1",
+      "kind": "primary",
+      "parent_array_id": "",
+      "repeat_consensus": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "entry_count": "12",
+      "distinct_spacer_count": "12",
+      "distinct_canonical_spacer_count": "12",
+      "repeat_allele_count": "1"
+    }
+  ],
+  "entries": [
+    {
+      "array_id": "Array_1",
+      "entry_index": "1",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "AAGAATCCGGAAACAAAACGTAACCGACCGAAC"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "2",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "AGTTATGGCTACCGACTCTTCTCAGCCTACGAA"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "3",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "ATATTGGAGGCTAGGCCCATTAAAGTCTACCTG"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "4",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "CAAGGAGAGGACAGGCTTTCTGGATATAGTTGT"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "5",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "CAGCGGCCCCGGAGCCACGTACGAAAGCTCCTC"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "6",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "CTTCTCAAGGCAATTGAGGATAGTGTTTGCAAG"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "7",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "GCGCGGTGCTGTCGGCTACTATTGCGACGGACT"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "8",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "GGAGATTCTTCGAAATTCCCCCCAAGAGCGCCA"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "9",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "GTTAAGTCCGCATCCCAACAGCTGCTTGATGAG"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "10",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "TCAGAGATACTGATTTGGGAATGGAGATCACTC"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "11",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "TCCGGAGGCTGTCATAAGGTAGGACCATGTATT"
+    },
+    {
+      "array_id": "Array_1",
+      "entry_index": "12",
+      "repeat_variant": "CACCATGCCGGGGTTAACTAGCTACCGGTA",
+      "spacer": "TCGCGCTATCTGGCTAACGCGCACCTAGTGGTA"
+    }
+  ],
+  "truncated": false,
+  "settings": {
+    "boundary_mode": "two-sided",
+    "short_spacer_filter": false,
+    "short_spacer_filter_applied": false,
+    "terminal_variant_rescue": true,
+    "terminal_variant_rescue_applied": true,
+    "read_linked_groups": true,
+    "array_database": "",
+    "database_read_validation": true,
+    "database_novel_spacers": false,
+    "database_groups": true,
+    "database_include_possible": false,
+    "confidence_scores": true,
+    "candidate_evidence": false,
+    "read_linked_groups_applied": false,
+    "coalesce_strand_equivalent_groups": true,
+    "experimental_alternative_views": false,
+    "threads": 2,
+    "ram_gib": 1,
+    "retain_graph": false,
+    "retain_cycles": true
+  },
+  "source_sha256": "446912e06333222b83c36462c60664095bc5d78a528136980ec8f0af20a6e539",
+  "interpretation": {
+    "unit": "sequence_group",
+    "locus_assignment": "unresolved",
+    "spacer_order": "unspecified",
+    "row_orientation": "preserved within emitted pairs; may differ within a group",
+    "terminal_repeat": "unobserved",
+    "support_counts_are_read_depth": false
+  },
+  "scoring": {
+    "schema_version": 1,
+    "table": "element_confidence.tsv",
+    "kind": "heuristic_evidence_indices",
+    "calibrated_probability": false,
+    "primary_rows_preserved": true,
+    "independent_molecules": false,
+    "read_quality_minimum": 10,
+    "maximum_expected_errors": 1,
+    "support_count_cap": 32,
+    "unknown_read_support": "NA",
+    "read_index": "min(sequence_units,4)/4 * min(start_offsets,2)/2",
+    "database_index": "category_weight * confidence * min(min(other_spacers,other_cores),3)/3",
+    "boundary_index": "database_index / catalogue_supported_decompositions",
+    "database_exclusion": "focal_spacer_and_circular_core",
+    "boundary_endpoints_separately_scored": false,
+    "boundary_scope": "emitted_competing_circular_core_splits"
+  }
+}
