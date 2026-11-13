@@ -7,7 +7,7 @@ export function validateFiles(files, mode, maxBytes) {
   if (!files.length) throw new Error("Choose an input file first.");
   if (files.length > (mode === "reads" ? 2 : 1)) throw new Error(mode === "reads" ? "Upload one or two read files." : "Upload one cycles.txt file.");
   if (files.some(file => !file.size)) throw new Error("Input files must not be empty.");
-  if (files.reduce((sum, file) => sum + file.size, 0) > maxBytes) throw new Error("Combined inputs exceed the 64 MiB upload limit.");
+  if (files.reduce((sum, file) => sum + file.size, 0) > maxBytes) throw new Error(`Combined inputs exceed the ${maxBytes >= 1024**3 ? maxBytes / 1024**3 + " GiB" : maxBytes / 1024**2 + " MiB"} upload limit.`);
 }
 
 export function makeApi(base) {
@@ -33,7 +33,7 @@ export function makeApi(base) {
       xhr.open("PUT", `${base}/api/v1/jobs/${credential.id}/input/${slot}`);
       xhr.setRequestHeader("Authorization", `Bearer ${credential.token}`);
       xhr.setRequestHeader("Content-Type", "application/octet-stream");
-      xhr.timeout = 300000;
+      xhr.timeout = 14400000;
       xhr.upload.onprogress = event => onProgress(event.loaded);
       xhr.onerror = () => reject(new Error("Upload connection lost. Your recovery link is saved below; cancel this job before trying again."));
       xhr.ontimeout = () => reject(new Error("Upload timed out. Cancel this job and try a smaller input."));
@@ -46,5 +46,5 @@ export function makeApi(base) {
       xhr.send(file);
     });
   }
-  return { request, upload };
+  return { request, upload, downloadUrl: path => base + "/api/v1" + path };
 }

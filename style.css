@@ -33,3 +33,5 @@
 #notice:not([hidden]){margin-top:32px}
 footer{max-width:680px;margin:28px auto 0;border:0;font-size:11px}
 @media(max-width:760px){.analysis-layout{margin-top:28px}.form-panel .panel-heading{padding-bottom:20px}.form-panel .mode-selector{grid-template-columns:1fr 1fr}.form-panel .mode-selector label{padding:10px}.help-section{margin-top:24px}footer{padding-top:12px;gap:6px}}
+
+.pagination{display:flex;align-items:center;justify-content:center;gap:1rem;flex-wrap:wrap;margin:1rem 0}.pagination span{font-size:.85rem;color:var(--muted)}
