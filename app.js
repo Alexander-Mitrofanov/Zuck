@@ -4,6 +4,7 @@ const $ = selector => document.querySelector(selector);
 const show = (selector, visible = true) => { $(selector).hidden = !visible; };
 const text = (selector, value) => { $(selector).textContent = value; };
 const number = value => Number(value ?? 0).toLocaleString();
+const fileSize = bytes => { const power = bytes >= 1024**3 ? 3 : bytes >= 1024**2 ? 2 : 1; return `${(bytes / 1024**power).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${["", "KiB", "MiB", "GiB"][power]}`; };
 const terminal = new Set(["completed", "failed", "cancelled"]);
 let api, credential = parseRecovery(location.hash), currentJob = null, result = null;
 let files = [], busy = false, ready = false, example = false, poll = null, generation = 0;
@@ -26,7 +27,7 @@ function options() {
   return values;
 }
 function fileSummary() {
-  text("#file-summary", files.length ? files.map(file => `${file.name} (${number(Math.ceil(file.size / 1024))} KiB)`).join("; ") : "");
+  text("#file-summary", files.length ? files.map(file => `${file.name} (${fileSize(file.size)})`).join("; ") : "");
   show("#file-summary", files.length > 0);
 }
 function changeMode() {
