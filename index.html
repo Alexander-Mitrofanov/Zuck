@@ -16,7 +16,7 @@
   <a href="#main-content" class="skip-link">Skip to analysis</a>
   <header class="hero">
     <div class="nav-shell">
-      <a class="brand" href="./" aria-label="Zuck home"><img src="assets/mark.svg" width="40" height="40" alt=""><strong>Zuck</strong><small>Web server</small></a>
+      <a class="brand" href="./" aria-label="Zuck home"><img src="assets/mark.svg" width="40" height="40" alt=""><strong>Zuck</strong></a>
       <nav aria-label="Primary navigation">
         <button id="nav-analysis" class="nav-link">Analysis</button>
         <a href="#help">Help</a>
@@ -27,50 +27,39 @@
     </div>
   </header>
   <main id="main-content" tabindex="-1">
-    <section class="intro">
-      <div><h1>CRISPR discovery in metagenomic reads</h1><p>Reconstruct repeat and spacer groups directly from reads, or revisit retained cycles from a previous Zuck run.</p></div>
-      <div class="sequence-mark" aria-hidden="true"><span class="repeat">Repeat</span><span class="spacer">Spacer</span><span class="repeat">Repeat</span><span class="spacer second">Spacer</span><span class="repeat">Repeat</span></div>
-    </section>
     <div id="notice" role="alert" class="notice" hidden></div>
     <div id="analysis-view" class="analysis-layout">
       <section class="panel form-panel" aria-labelledby="analysis-heading">
-        <div class="panel-heading"><div><h2 id="analysis-heading">New analysis</h2><p>Choose your input and submit a job.</p></div><span class="method-tag">Zuck</span></div>
+        <div class="panel-heading"><h1 id="analysis-heading">New analysis</h1></div>
         <form id="analysis-form">
-          <fieldset class="mode-selector"><legend>Input type</legend>
-            <label><input type="radio" name="mode" value="reads" checked><span><strong>Raw reads</strong><small>FASTA or FASTQ · one or two files</small></span></label>
-            <label><input type="radio" name="mode" value="cycles"><span><strong>Retained cycles</strong><small>cycles.txt · post-processing only</small></span></label>
+          <fieldset class="mode-selector"><legend class="sr-only">Input type</legend>
+            <label><input type="radio" name="mode" value="reads" checked><span><strong>Raw reads</strong></span></label>
+            <label><input type="radio" name="mode" value="cycles"><span><strong>Retained cycles</strong></span></label>
           </fieldset>
           <div class="input-section">
-            <label for="files" class="field-label" id="input-label">Upload reads</label>
+            <label for="files" class="sr-only" id="input-label">Upload reads</label>
             <div id="drop-zone" class="drop-zone">
-              <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M16 22V4m-6 6 6-6 6 6M5 22v6h22v-6" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-              <strong id="drop-title">Choose files or drop them here</strong>
-              <span id="input-hint">FASTA / FASTQ, plain or gzip compressed. Paired reads must be in matching order.</span>
+              <strong id="drop-title">Drop files or browse</strong>
+              <span id="input-hint">FASTA / FASTQ · 1–2 files · .gz accepted</span>
               <input id="files" type="file" multiple accept=".fastq,.fq,.fasta,.fa,.fna,.gz" aria-describedby="input-hint file-summary">
             </div>
-            <p id="file-summary" class="file-summary" role="status">No files selected</p>
+            <p id="file-summary" class="file-summary" role="status" hidden></p>
             <div class="example-actions"><button id="use-example" type="button" class="text-button">Use example input</button><button id="view-example" type="button" class="text-button">View example results</button></div>
           </div>
-          <details class="options"><summary>Analysis options <span>Two-sided boundaries by default</span></summary>
+          <details class="options"><summary>Options</summary>
             <div class="options-grid">
               <label class="wide">Boundary inference<select id="boundary-mode"><option value="two-sided">Two-sided (recommended)</option><option value="legacy">Legacy</option><option value="branch-aware">Branch-aware (experimental)</option></select></label>
               <label>Minimum repeat length<input type="number" id="repeat-min" min="0" max="500" value="0"></label>
               <label>Maximum repeat length<input type="number" id="repeat-max" min="0" max="500" value="0"></label>
               <label>Minimum spacer length<input type="number" id="spacer-min" min="0" max="500" value="0"></label>
               <label>Maximum spacer length<input type="number" id="spacer-max" min="0" max="500" value="0"></label>
-              <p class="wide muted">Lengths are in bases. Set a bound to 0 to disable it. These filters constrain reported groups; they do not expand discovery.</p>
+              <p class="wide muted">Lengths in bases. 0 = no bound.</p>
               <label class="checkbox wide"><input type="checkbox" id="low-abundance">Retain singleton graph edges (raw reads only)</label>
             </div>
           </details>
-          <div class="submit-area"><div><button id="submit" type="submit" class="primary" disabled>Run analysis</button><button id="check-service" type="button" class="secondary" hidden>Check service</button></div><p id="limits">Up to 64 MiB of input · results retained for 24 hours</p><p id="upload-status" role="status" hidden></p><progress id="upload-progress" max="100" value="0" hidden></progress></div>
+          <div class="submit-area"><div><button id="submit" type="submit" class="primary" disabled>Run analysis</button><button id="check-service" type="button" class="secondary" hidden>Check service</button></div><p id="limits">64 MiB max · 24 h retention</p><p id="upload-status" role="status" hidden></p><progress id="upload-progress" max="100" value="0" hidden></progress></div>
         </form>
       </section>
-      <aside class="guide" aria-label="Analysis guide">
-        <h2>From reads to repeat–spacer groups</h2>
-        <ol class="workflow"><li><strong>Submit your sequences</strong><p>Use metagenomic reads. For paired data, upload both files together.</p></li><li><strong>Reconstruct CRISPR groups</strong><p>Zuck searches graph cycles and infers repeat boundaries and spacer sequences.</p></li><li><strong>Inspect and download</strong><p>Explore groups, keep your recovery link, and download the full result bundle.</p></li></ol>
-        <div class="guide-note"><h3>Interpreting your results</h3><p>Groups describe observed repeat and spacer content. Spacer order and complete genomic loci are not established by this analysis.</p></div>
-        <div class="guide-note"><h3>Small datasets first</h3><p>This service accepts up to 64 MiB compressed and 128 MiB expanded input, with a 30-minute analysis limit. Use standalone Zuck for larger datasets.</p></div>
-      </aside>
     </div>
     <section id="job-view" class="panel job-panel" aria-labelledby="job-heading" hidden>
       <div class="panel-heading"><div><h2 id="job-heading">Your analysis</h2><p id="job-id"></p></div><span id="job-state" class="state">Queued</span></div>
@@ -88,12 +77,13 @@
       <div id="groups"></div>
       <details class="provenance"><summary>Analysis settings and provenance</summary><pre id="provenance"></pre></details>
     </section>
-    <section id="help" class="help-section" aria-labelledby="help-heading"><h2 id="help-heading">Help and methods</h2><div class="help-grid">
+    <details id="help" class="help-section"><summary>Help</summary><div class="help-grid">
       <details><summary>Which input should I use?</summary><p>Use raw FASTA or four-line FASTQ reads for a full run. Gzip compression is supported. Upload one single-end file or two paired files with corresponding read identifiers and order. Individual reads may be at most 20,000 bases long.</p><p>Retained cycles are Zuck’s cycles.txt output: one cycle sequence per line. Cycle replay skips graph construction and does not provide read-based confidence or linkage evidence.</p></details>
+      <details><summary>Service limits</summary><p>64 MiB total upload, 128 MiB expanded input, and 30 minutes per analysis. Use standalone Zuck for larger datasets.</p></details>
       <details><summary>What does the example show?</summary><p>The example is a small synthetic cycle dataset with a shared repeat and distinct spacers. Its precomputed results were generated by the same Zuck executable as this release. “Use example input” runs that dataset through the service.</p></details>
       <details><summary>What is in the download?</summary><p>Machine-readable groups and entries, text reports, confidence evidence, a run manifest, and retained cycles when generated. Read-supported group and edge tables are included when the input supplies that evidence. The preview displays primary groups.</p></details>
       <details><summary>How are jobs and data handled?</summary><p>No account is required. Job access uses a private recovery link; save it before leaving the page. Uploaded files and results are deleted after 24 hours. Incomplete uploads expire after 30 minutes. If a worker restarts during analysis, the job reports a failure so that you can submit it again.</p></details>
-    </div><p class="method-note">Zuck builds a compact de Bruijn graph, discovers bounded cycles, and reconstructs repeat and spacer sequences. The default two-sided method preserves observed repeat–spacer pairing. Discovery is heuristic and is not exhaustive.</p></section>
+    </div><p class="method-note">Zuck builds a compact de Bruijn graph, discovers bounded cycles, and reconstructs repeat and spacer sequences. The default two-sided method preserves observed repeat–spacer pairing. Discovery is heuristic and is not exhaustive. Length filters constrain reported groups; they do not expand discovery.</p></details>
     <footer><span>Zuck web server · v1.0.0</span><span>Interface based on <a href="https://alexander-mitrofanov.github.io/CRISPRloci-v2/">CRISPRloci v2</a> · <a href="https://github.com/Alexander-Mitrofanov/Zuck">Web source</a></span></footer>
   </main>
 </body>

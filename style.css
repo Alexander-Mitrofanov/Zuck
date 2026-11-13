@@ -11,3 +11,25 @@
 @media(max-width:760px){main,.nav-shell{width:calc(100% - 32px)}.nav-shell{min-height:78px;flex-wrap:wrap;padding:14px 0;gap:8px}.brand strong{font-size:24px}nav{width:100%;gap:18px;flex-wrap:wrap}nav>a,.nav-link{font-size:12px;min-height:32px}.theme-button{min-height:32px;font-size:12px;padding:3px 8px}.service-status{margin-left:auto}.intro{padding:28px 0 24px}.intro h1{font-size:25px}.intro p{font-size:14px}.analysis-layout{grid-template-columns:1fr;gap:28px}.guide{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}.guide h2,.workflow{grid-column:1/-1}.workflow{display:flex;gap:15px}.workflow li{flex:1;padding-left:0;padding-top:32px}.guide h2{margin-bottom:18px}.panel-heading{padding:19px}form,.job-body{padding:20px}.help-grid{grid-template-columns:1fr}.help-section{margin-top:32px}.statistics{gap:25px}.results-heading{align-items:flex-start;flex-direction:column}.input-with-button{flex-direction:column}.input-with-button button{align-self:flex-start}.job-actions .text-button{margin-left:0}footer{flex-direction:column}.mode-selector{gap:8px}.mode-selector label{padding:10px 8px;gap:8px}.mode-selector small{font-size:11px}}
 @media(max-width:420px){.service-status{margin-left:0}nav{gap:13px}.intro h1{font-size:23px}.mode-selector{grid-template-columns:1fr}.guide{display:block}.workflow{display:block}.workflow li{padding:0 0 20px 35px}.options-grid{gap:12px}.statistics{gap:18px}.statistics strong{font-size:25px}.statistics span{font-size:11px}.job-steps li{padding:7px 4px}.example-actions{gap:14px}.panel-heading,form,.job-body{padding:16px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+
+/* Compact input view; result and job layouts retain their existing widths. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+.analysis-layout{display:block;max-width:680px;margin:40px auto 0}
+.form-panel{border:0;overflow:visible}
+.form-panel .panel-heading{padding:0 0 24px;background:transparent;border:0}
+.form-panel h1{font-size:25px;letter-spacing:-.3px}
+.form-panel form{padding:0}
+.form-panel .mode-selector{margin-bottom:20px}
+.form-panel .mode-selector label{padding:10px 14px}
+.form-panel .drop-zone{padding:36px 20px}
+.form-panel .example-actions{margin-top:4px}
+.form-panel .submit-area{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 20px;padding-top:20px}
+.form-panel .submit-area p{margin:0}
+.form-panel #upload-status,.form-panel #upload-progress{width:100%}
+.help-section{max-width:680px;margin:32px auto 0;padding:16px 0;border-bottom:1px solid var(--line);font-size:13px}
+.help-section>summary{cursor:pointer;font-weight:500}
+.help-section .help-grid{margin-top:14px;grid-template-columns:1fr}
+.help-section .method-note{margin-bottom:0}
+#notice:not([hidden]){margin-top:32px}
+footer{max-width:680px;margin:28px auto 0;border:0;font-size:11px}
+@media(max-width:760px){.analysis-layout{margin-top:28px}.form-panel .panel-heading{padding-bottom:20px}.form-panel .mode-selector{grid-template-columns:1fr 1fr}.form-panel .mode-selector label{padding:10px}.help-section{margin-top:24px}footer{padding-top:12px;gap:6px}}

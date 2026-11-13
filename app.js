@@ -26,7 +26,8 @@ function options() {
   return values;
 }
 function fileSummary() {
-  text("#file-summary", files.length ? files.map(file => `${file.name} (${number(Math.ceil(file.size / 1024))} KiB)`).join("; ") : "No files selected");
+  text("#file-summary", files.length ? files.map(file => `${file.name} (${number(Math.ceil(file.size / 1024))} KiB)`).join("; ") : "");
+  show("#file-summary", files.length > 0);
 }
 function changeMode() {
   const reads = mode() === "reads";
@@ -34,7 +35,7 @@ function changeMode() {
   $("#files").accept = reads ? ".fastq,.fq,.fasta,.fa,.fna,.gz" : ".txt,.gz";
   $("#low-abundance").disabled = !reads;
   text("#input-label", reads ? "Upload reads" : "Upload retained cycles");
-  text("#input-hint", reads ? "FASTA / FASTQ, plain or gzip compressed. Paired reads must be in matching order." : "Zuck cycles.txt, plain or gzip compressed. One sequence per line.");
+  text("#input-hint", reads ? "FASTA / FASTQ · 1–2 files · .gz accepted" : "cycles.txt · 1 file · .gz accepted");
   files = []; $("#files").value = ""; fileSummary();
 }
 async function service() {
@@ -43,7 +44,7 @@ async function service() {
     const [health, config] = await Promise.all([api.request("/health"), api.request("/config")]);
     ready = health.status === "ready";
     maxBytes = config.max_input_bytes;
-    text("#limits", `Up to ${Math.floor(maxBytes / 1024**2)} MiB of input · results retained for ${config.retention_hours} hours`);
+    text("#limits", `${Math.floor(maxBytes / 1024**2)} MiB max · ${config.retention_hours} h retention`);
   } catch { ready = false; }
   $("#service").classList.toggle("online", ready);
   text("#service span:last-child", ready ? "Service ready" : "Service unavailable");
@@ -231,3 +232,5 @@ catch (error) { notice(error.message); text("#service span:last-child", "Configu
 service(); setInterval(service, 60000);
 if (credential) { displayJob({ status: "unknown", message: "Recovering your job…" }); refresh(); }
 else if (location.hash.startsWith("#job=")) notice("This recovery link is invalid. Use the complete link saved when you submitted the job.");
+
+$('nav a[href="#help"]').addEventListener("click", () => { $("#help").open = true; });
