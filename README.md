@@ -8,6 +8,16 @@ Public site: https://alexander-mitrofanov.github.io/Zuck/
 The service accepts one or two FASTA/FASTQ read files, or a retained `cycles.txt`
 file. It provides job progress, cancellation, private recovery links, group and
 sequence search across all groups, paginated tables, and authenticated result downloads.
+New read analyses default to supported calls with 26–50-base spacers and
+quality-filtered read context. Options allow support without the profile length
+bound, or all inclusive candidates. The ZIP preserves both views and every
+selection decision. Cycle replay and older jobs are explicitly labelled
+inclusive; FASTA without quality scores cannot supply the required support.
+When references are configured, every matching repeat and spacer is highlighted
+with expandable source links. Candidate protospacer matches include accession,
+coordinates, strand and alignment metrics. Match pagination and the ZIP expose
+all reported evidence. Results distinguish missing searches from completed
+searches with no accepted matches.
 Combined uploads may be up to 16 GiB (32 GiB expanded). Completed results
 are compressed and retained for 72 hours; raw input and temporary files are
 removed after processing. A synthetic precomputed

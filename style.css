@@ -35,3 +35,18 @@ footer{max-width:680px;margin:28px auto 0;border:0;font-size:11px}
 @media(max-width:760px){.analysis-layout{margin-top:28px}.form-panel .panel-heading{padding-bottom:20px}.form-panel .mode-selector{grid-template-columns:1fr 1fr}.form-panel .mode-selector label{padding:10px}.help-section{margin-top:24px}footer{padding-top:12px;gap:6px}}
 
 .pagination{display:flex;align-items:center;justify-content:center;gap:1rem;flex-wrap:wrap;margin:1rem 0}.pagination span{font-size:.85rem;color:var(--muted)}
+.annotation-status{font-size:13px;color:var(--muted);line-height:1.6;max-width:1000px}
+.sequence-evidence{min-width:180px;max-width:570px;white-space:normal}
+.sequence-evidence>code{overflow-wrap:anywhere;word-break:break-all}
+.group td{vertical-align:top}.repeat-sequence.database-match{width:fit-content;max-width:100%;margin-top:8px}
+code.database-match{background:#d9f0df;color:#145c34;border-radius:3px;padding:2px 4px;box-decoration-break:clone}
+code.protospacer-match{text-decoration:underline;text-decoration-color:#2874bd;text-decoration-thickness:3px;text-underline-offset:4px}
+.match-details{margin-top:8px;font-size:12px;line-height:1.5}
+.group .match-details>summary{display:list-item;padding:4px 0;cursor:pointer;color:var(--action);font-size:12px;background:transparent;border:0;word-break:normal}
+.match-details ul{padding-left:18px;margin:5px 0;white-space:normal;overflow-wrap:anywhere;max-height:180px;overflow:auto}
+.match-details li{margin-bottom:9px}.match-details a{color:var(--action);text-decoration:underline}
+.match-description,.match-status{display:block;font-size:11px;color:var(--muted);margin-top:5px;white-space:normal}
+.consensus-evidence{padding:16px 20px;border-bottom:1px solid var(--line);font-size:12px}
+.consensus-evidence>strong{display:block;margin-bottom:8px}.more-matches{font-size:12px;min-height:32px;padding:5px 10px}
+html[data-theme=dark] code.database-match{background:#204f38;color:#c6f6d5}
+html[data-theme=dark] code.protospacer-match{text-decoration-color:#80bfff}

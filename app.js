@@ -1,4 +1,5 @@
 import { makeApi, parseRecovery, validateFiles } from "./api.js";
+import { sequenceEvidence } from "./matches.js";
 
 const $ = selector => document.querySelector(selector);
 const show = (selector, visible = true) => { $(selector).hidden = !visible; };
@@ -15,10 +16,11 @@ function mode() { return $("input[name=mode]:checked").value; }
 function enableSubmit() {
   document.querySelectorAll("#analysis-form input, #analysis-form select, #analysis-form button").forEach(control => { control.disabled = busy; });
   $("#low-abundance").disabled = busy || mode() !== "reads";
+  $("#call-profile").disabled = busy || mode() !== "reads";
   $("#submit").disabled = busy || !ready || Boolean(credential);
 }
 function options() {
-  const values = { boundary_mode: $("#boundary-mode").value, low_abundance: mode() === "reads" && $("#low-abundance").checked };
+  const values = { boundary_mode: $("#boundary-mode").value, low_abundance: mode() === "reads" && $("#low-abundance").checked, call_profile: mode() === "reads" ? $("#call-profile").value : "off" };
   for (const kind of ["repeat", "spacer"]) {
     const lo = Number($(`#${kind}-min`).value), hi = Number($(`#${kind}-max`).value);
     if (![lo, hi].every(value => Number.isInteger(value) && value >= 0 && value <= 500) || (lo && hi && lo > hi)) throw new Error(`Check the ${kind} length range. Minimum must not exceed maximum.`);
@@ -35,6 +37,8 @@ function changeMode() {
   $("#files").multiple = reads;
   $("#files").accept = reads ? ".fastq,.fq,.fasta,.fa,.fna,.gz" : ".txt,.gz";
   $("#low-abundance").disabled = !reads;
+  $("#call-profile").disabled = !reads;
+  text("#profile-hint", reads ? "Default: read-supported spacers of 26–50 bases. FASTQ quality scores are required. All candidates remain in the download." : "Cycle replay shows inclusive candidates because reads are unavailable for support checks.");
   text("#input-label", reads ? "Upload reads" : "Upload retained cycles");
   text("#input-hint", reads ? "FASTA / FASTQ · 1–2 files · .gz accepted" : "cycles.txt · 1 file · .gz accepted");
   files = []; $("#files").value = ""; fileSummary();
@@ -111,6 +115,10 @@ function renderGroups() {
   const container = $("#groups"); container.replaceChildren();
   const query = $("#group-search").value.trim().toUpperCase();
   const rows = new Map();
+  const session = credential;
+  const loadMatches = example || !session ? null : (id, kind, offset) => api.request(
+    `/jobs/${session.id}/matches/${id}?kind=${kind}&offset=${offset}`, {credential:session});
+  const sequence = (value, annotation) => sequenceEvidence(value, annotation, loadMatches, error => notice(friendly(error)));
   for (const row of result.entries) { if (!rows.has(row.array_id)) rows.set(row.array_id, []); rows.get(row.array_id).push(row); }
   let found = 0;
   for (const group of result.arrays) {
@@ -120,8 +128,16 @@ function renderGroups() {
     const details = element("details", undefined, "group");
     details.open = result.arrays.length === 1;
     const summary = element("summary");
-    summary.append(element("strong", group.array_id), element("span", `${number(group.entry_count)} entries`, "entry-count"), element("code", group.repeat_consensus, "repeat-sequence"));
+    const consensus = element("code", group.repeat_consensus, "repeat-sequence");
+    if (group.repeat_consensus_annotation?.database_count > 0) consensus.classList.add("database-match");
+    summary.append(element("strong", group.array_id), element("span", `${number(group.entry_count)} entries`, "entry-count"), consensus);
     details.append(summary);
+    if (group.group_status === "singleton") details.append(element("p", "One distinct supported spacer; this group does not establish a complete array.", "muted"));
+    if (group.repeat_consensus_annotation) {
+      const evidence = element("div", undefined, "consensus-evidence");
+      evidence.append(element("strong", "Repeat consensus"), sequence(group.repeat_consensus, group.repeat_consensus_annotation));
+      details.append(evidence);
+    }
     const wrap = element("div", undefined, "table-wrap");
     const table = element("table");
     const caption = element("caption", "Observed repeat–spacer pairs. Row order does not indicate genomic order."); table.append(caption);
@@ -134,7 +150,10 @@ function renderGroups() {
       for (const row of values) {
         const line = element("tr");
         for (const [i, value] of [row.entry_index, row.repeat_variant, row.spacer, row.spacer?.length].entries()) {
-          const cell = element("td"); cell.append(element(i === 1 || i === 2 ? "code" : "span", value ?? "Not available")); line.append(cell);
+          const cell = element("td");
+          if (i === 1 || i === 2) cell.append(sequence(value, row[(i === 1 ? "repeat_variant" : "spacer") + "_annotation"]));
+          else cell.append(element("span", value ?? "Not available"));
+          line.append(cell);
         }
         body.append(line);
       }
@@ -164,17 +183,26 @@ function renderGroups() {
     $("#groups-prev").disabled = paging.offset === 0;
     $("#groups-next").disabled = paging.offset + paging.limit >= paging.total;
   }
-  if (!found) container.append(element("p", query ? "No groups match your search." : "No repeat–spacer groups were detected with these settings. This does not establish that CRISPR sequences are absent.", "empty-result"));
+  if (!found) container.append(element("p", query ? "No groups match your search." : result.result_view?.kind === "supported" ? "No groups passed the supported-call profile. Check the inclusive candidates and call decisions in the download; missing support does not establish absence." : "No repeat–spacer groups were detected with these settings. This does not establish that CRISPR sequences are absent.", "empty-result"));
 }
 function renderResult(output, isExample) {
   result = output; example = isExample;
   show("#result-view"); show("#download", !isExample); show("#example-download", isExample);
   text("#result-context", isExample ? "Precomputed example · synthetic cycle dataset" : `Analysis completed in ${number(output.elapsed_seconds)} seconds.`);
   const stats = $("#statistics"); stats.replaceChildren();
-  for (const [label, value] of [["Primary groups", output.counts.primary_arrays], ["Repeat–spacer entries", output.counts.primary_entries], ["Read-linked groups", output.counts.read_linked_groups]]) {
+  const view = output.result_view;
+  const supported = view?.kind === "supported";
+  text("#result-heading", supported ? "Supported repeat and spacer groups" : "Inclusive candidate groups");
+  text("#result-profile", supported ? `Showing ${view.profile === "standard" ? "read-supported spacers of 26–50 bases" : "read-supported spacers without a profile length bound"}. Original row IDs are retained. ${number(view.unknown_context_rows)} candidate rows could not be assessed for context support. The download also contains all inclusive candidates and call decisions.` : view?.reason === "profile_off" ? "Showing inclusive candidates. The supported-call profile was disabled or this is cycle replay without reads." : "This older result contains inclusive candidates and has not been filtered by the supported-call profile.");
+  const metrics = supported ? [["Supported groups", view.groups], ["Supported entries", view.entries], ["Distinct supported spacers", view.spacer_types]] : [["Candidate groups", output.counts.primary_arrays], ["Repeat–spacer entries", output.counts.primary_entries], ["Read-linked groups", output.counts.read_linked_groups]];
+  for (const [label, value] of metrics) {
     const item = element("div"); item.append(element("strong", value == null ? "—" : number(value)), element("span", label)); stats.append(item);
   }
-  text("#provenance", JSON.stringify({ settings: output.settings, source_sha256: output.source_sha256, interpretation: output.interpretation, scoring: output.scoring }, null, 2));
+  const annotations = output.annotations;
+  const database = annotations?.database?.state === "complete" ? "Exact catalogue matches are highlighted in green." : "Catalogue matching was not run: no reference was configured for this result.";
+  const targets = annotations?.protospacer?.state === "complete" ? "Candidate protospacer matches have a blue underline. Search uses full-length ungapped BLAST alignments; no hit does not establish absence." : "Protospacer search was not run: no viral reference was configured for this result.";
+  text("#annotation-status", `${database} ${targets} Expand a match count for source links.`);
+  text("#provenance", JSON.stringify({ result_view: view, settings: output.settings, source_sha256: output.source_sha256, interpretation: output.interpretation, supported_call_interpretation: output.supported_call_interpretation, scoring: output.scoring, annotations }, null, 2));
   show("#truncated", output.truncated); $("#group-search").value = ""; renderGroups();
 }
 

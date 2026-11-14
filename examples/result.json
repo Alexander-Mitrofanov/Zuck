@@ -32,6 +32,102 @@
     "supplemental_entries": 0,
     "terminal_variant_rows_rescued": 0
   },
+  "settings": {
+    "boundary_mode": "two-sided",
+    "short_spacer_filter": false,
+    "short_spacer_filter_applied": false,
+    "terminal_variant_rescue": true,
+    "terminal_variant_rescue_applied": true,
+    "read_linked_groups": true,
+    "array_database": "",
+    "database_read_validation": true,
+    "database_novel_spacers": false,
+    "database_groups": true,
+    "database_include_possible": false,
+    "confidence_scores": true,
+    "call_profile": "off",
+    "candidate_evidence": false,
+    "boundary_radius": 3,
+    "boundary_policy": "catalogue",
+    "read_linked_groups_applied": false,
+    "coalesce_strand_equivalent_groups": true,
+    "experimental_alternative_views": false,
+    "threads": 2,
+    "ram_gib": 1,
+    "retain_graph": false,
+    "retain_cycles": true
+  },
+  "source_sha256": "357c08f197bdbe9b96fc18daeb3df79daa908130506285b55022f9af0503751c",
+  "interpretation": {
+    "unit": "sequence_group",
+    "locus_assignment": "unresolved",
+    "spacer_order": "unspecified",
+    "row_orientation": "preserved within emitted pairs; may differ within a group",
+    "terminal_repeat": "unobserved",
+    "support_counts_are_read_depth": false
+  },
+  "scoring": {
+    "schema_version": 1,
+    "table": "element_confidence.tsv",
+    "kind": "heuristic_evidence_indices",
+    "calibrated_probability": false,
+    "primary_rows_preserved": true,
+    "independent_molecules": false,
+    "read_quality_minimum": 10,
+    "maximum_expected_errors": 1,
+    "support_count_cap": 32,
+    "unknown_read_support": "NA",
+    "read_index": "min(sequence_units,4)/4 * min(start_offsets,2)/2",
+    "database_index": "category_weight * confidence * min(min(other_spacers,other_cores),3)/3",
+    "boundary_index": "database_index / catalogue_supported_decompositions",
+    "database_exclusion": "focal_spacer_and_circular_core",
+    "boundary_endpoints_separately_scored": false,
+    "boundary_scope": "emitted_competing_circular_core_splits"
+  },
+  "supported_call_interpretation": {
+    "enabled": false,
+    "profile": "off",
+    "decision_table": "call_decisions.tsv",
+    "selected_table": "supported_entries.tsv",
+    "sequence_inventory": "supported_spacers.fasta",
+    "family_table": "supported_arrays.tsv",
+    "primary_rows_preserved": true,
+    "unit": "oriented_primary_or_supplemental_row",
+    "selection": "observable_context_with_at_least_two_sequence_units_and_start_offsets",
+    "spacer_minimum": 0,
+    "spacer_maximum": 0,
+    "zero_length_bound_means": "no_profile_length_bound",
+    "read_span": "whole_literal_repeat_spacer_next_repeat_prefix16_or_whole_reverse_complement",
+    "minimum_quality": 10,
+    "maximum_expected_errors": 1,
+    "independent_molecules": false,
+    "calibrated_probability": false,
+    "original_memberships_retained": true,
+    "singletons_retained_and_labeled": true,
+    "canonical_inventory": "any_selected_row_does_not_validate_other_pairings",
+    "unknown_context": [
+      "no_reads",
+      "no_quality",
+      "span_exceeds_max_quality_read"
+    ],
+    "unknown_is_biological_rejection": false,
+    "locus_assignment": "unresolved",
+    "spacer_order": "unspecified"
+  },
+  "annotations": {
+    "database": {
+      "state": "not_configured"
+    },
+    "protospacer": {
+      "state": "not_configured"
+    }
+  },
+  "result_view": {
+    "kind": "inclusive",
+    "reason": "profile_off",
+    "groups": 1,
+    "entries": 12
+  },
   "arrays": [
     {
       "array_id": "Array_1",
@@ -41,7 +137,8 @@
       "entry_count": "12",
       "distinct_spacer_count": "12",
       "distinct_canonical_spacer_count": "12",
-      "repeat_allele_count": "1"
+      "repeat_allele_count": "1",
+      "entries_truncated": false
     }
   ],
   "entries": [
@@ -119,53 +216,10 @@
     }
   ],
   "truncated": false,
-  "settings": {
-    "boundary_mode": "two-sided",
-    "short_spacer_filter": false,
-    "short_spacer_filter_applied": false,
-    "terminal_variant_rescue": true,
-    "terminal_variant_rescue_applied": true,
-    "read_linked_groups": true,
-    "array_database": "",
-    "database_read_validation": true,
-    "database_novel_spacers": false,
-    "database_groups": true,
-    "database_include_possible": false,
-    "confidence_scores": true,
-    "candidate_evidence": false,
-    "read_linked_groups_applied": false,
-    "coalesce_strand_equivalent_groups": true,
-    "experimental_alternative_views": false,
-    "threads": 2,
-    "ram_gib": 1,
-    "retain_graph": false,
-    "retain_cycles": true
-  },
-  "source_sha256": "446912e06333222b83c36462c60664095bc5d78a528136980ec8f0af20a6e539",
-  "interpretation": {
-    "unit": "sequence_group",
-    "locus_assignment": "unresolved",
-    "spacer_order": "unspecified",
-    "row_orientation": "preserved within emitted pairs; may differ within a group",
-    "terminal_repeat": "unobserved",
-    "support_counts_are_read_depth": false
-  },
-  "scoring": {
-    "schema_version": 1,
-    "table": "element_confidence.tsv",
-    "kind": "heuristic_evidence_indices",
-    "calibrated_probability": false,
-    "primary_rows_preserved": true,
-    "independent_molecules": false,
-    "read_quality_minimum": 10,
-    "maximum_expected_errors": 1,
-    "support_count_cap": 32,
-    "unknown_read_support": "NA",
-    "read_index": "min(sequence_units,4)/4 * min(start_offsets,2)/2",
-    "database_index": "category_weight * confidence * min(min(other_spacers,other_cores),3)/3",
-    "boundary_index": "database_index / catalogue_supported_decompositions",
-    "database_exclusion": "focal_spacer_and_circular_core",
-    "boundary_endpoints_separately_scored": false,
-    "boundary_scope": "emitted_competing_circular_core_splits"
+  "pagination": {
+    "offset": 0,
+    "limit": 25,
+    "total": 1,
+    "query": ""
   }
 }
