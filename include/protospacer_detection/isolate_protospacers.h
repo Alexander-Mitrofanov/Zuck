@@ -11,9 +11,11 @@
 #include <functional>
 #include "sdbg/sdbg.h"
 
-//define pair<std::map<uint64_t,std::set<uint64_t>>,std::map<uint64_t,std::set<uint64_t>>>
-typedef std::pair<std::map<uint64_t,std::set<uint64_t>>,std::map<uint64_t,std::set<uint64_t>>> IN_OUT_PAIR_MAP_SET;
+// Incoming/outgoing boundary nodes keyed by cycle anchor.
+using CycleNodeSets = std::map<uint64_t, std::set<uint64_t>>;
+using IN_OUT_PAIR_MAP_SET = std::pair<CycleNodeSets, CycleNodeSets>;
 
+// Experimental graph extension helpers; not used by the production CLI.
 class IsolateProtospacers {
 private:
     const SDBG& graph;

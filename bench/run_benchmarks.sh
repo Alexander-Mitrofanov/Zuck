@@ -1,83 +1,71 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Simple benchmark runner for MCAAT cycle_finder
-# Produces CSV rows: threads,run,elapsed_seconds,max_rss_kb,cycles
-
+# Replay a retained graph with different workers and fixed logical partitions.
 usage() {
   cat <<EOF
-Usage: $0 --binary PATH --input PATH --threads LIST --runs N -o OUTCSV
+Usage: $0 --binary PATH --input GRAPH_DIR --threads LIST [--runs N] -o OUTCSV
 
-Options:
-  --binary PATH     Path to cycle_finder binary
-  --input PATH      Input graph file
-  --threads LIST    Comma-separated thread counts (e.g. 1,4,8,24)
-  --runs N          Number of runs per thread count (default: 3)
-  -o OUTCSV         Output CSV file (overwritten)
-
-Example:
-  $0 --binary ./bin/cycle_finder --input graphs/huge_graph.bin --threads 1,4,8,24 --runs 3 -o bench/results.csv
+  --binary PATH     Zuck executable
+  --input PATH      Retained graph directory (the --graph input to Zuck)
+  --threads LIST    Comma-separated positive worker counts (e.g. 1,4,8)
+  --runs N          Positive runs per worker count (default: 3)
+  -o OUTCSV         CSV output (overwritten)
 EOF
-  exit 1
 }
+fail() { echo "Error: $*" >&2; exit 1; }
 
-BINARY="" INPUT="" THREADS="" RUNS=3 OUTCSV=""
-
-while [[ $# -gt 0 ]]; do
+binary="" graph="" thread_list="" runs=3 output=""
+while (($#)); do
   case "$1" in
-    --binary) BINARY="$2"; shift 2;;
-    --input) INPUT="$2"; shift 2;;
-    --threads) THREADS="$2"; shift 2;;
-    --runs) RUNS="$2"; shift 2;;
-    -o) OUTCSV="$2"; shift 2;;
-    -h|--help) usage;;
-    *) echo "Unknown arg: $1"; usage;;
+    -h|--help) usage; exit 0 ;;
+    --binary|--input|--threads|--runs|-o)
+      (($# >= 2)) || fail "$1 requires a value"
+      case "$1" in
+        --binary) binary=$2 ;;
+        --input) graph=$2 ;;
+        --threads) thread_list=$2 ;;
+        --runs) runs=$2 ;;
+        -o) output=$2 ;;
+      esac
+      shift 2 ;;
+    *) fail "unknown argument: $1" ;;
   esac
 done
+[[ -n "$binary" && -n "$graph" && -n "$thread_list" && -n "$output" ]] || { usage >&2; exit 1; }
+[[ -x "$binary" ]] || fail "binary is not executable: $binary"
+[[ -d "$graph" ]] || fail "graph directory does not exist: $graph"
+[[ "$runs" =~ ^[1-9][0-9]*$ ]] || fail "--runs must be a positive integer"
+[[ ${#runs} -le 9 ]] || fail "--runs is too large (maximum 999999999)"
+[[ "$thread_list" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || fail "--threads must contain positive integers"
+[[ -x /usr/bin/time ]] || fail "/usr/bin/time is required"
+command -v python3 >/dev/null || fail "python3 is required to read run manifests"
 
-if [[ -z "$BINARY" || -z "$INPUT" || -z "$THREADS" || -z "$OUTCSV" ]]; then
-  usage
-fi
-
-mkdir -p "$(dirname "$OUTCSV")"
-
-echo "threads,run,elapsed_s,max_rss_kb,cycles" > "$OUTCSV"
-
-IFS=',' read -r -a THREAD_ARR <<< "$THREADS"
-
-for threads in "${THREAD_ARR[@]}"; do
-  for ((run=1; run<=RUNS; run++)); do
-    outtmp="/tmp/cycle_out.${threads}.${run}.json"
-    timetmp="/tmp/cycle_time.${threads}.${run}.txt"
-
+# Each invocation owns its scratch directory, including after failed runs.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/zuck-benchmark.XXXXXX")
+trap 'rm -rf -- "$scratch"' EXIT
+mkdir -p -- "$(dirname -- "$output")"
+printf 'threads,run,elapsed_s,max_rss_kb,cycles\n' > "$output"
+IFS=',' read -r -a workers <<< "$thread_list"
+for threads in "${workers[@]}"; do
+  for ((run=1; run<=runs; run++)); do
+    result="$scratch/result-$threads-$run"
     echo "Running threads=$threads run=$run"
-
-    # Use /usr/bin/time to capture wall time and max RSS
-    /usr/bin/time -f "%e %M" -o "$timetmp" "$BINARY" --input "$INPUT" --threads "$threads" --out "$outtmp"
-
-    read -r elapsed rss_kb < "$timetmp"
-
-    # Try to extract cycles from output JSON if possible
-    cycles=""
-    if command -v jq >/dev/null 2>&1 && jq -e . "$outtmp" >/dev/null 2>&1; then
-      # Common fields: either cycles array or cycle_count
-      if jq -e '.cycles' "$outtmp" >/dev/null 2>&1; then
-        cycles=$(jq '.cycles | length' "$outtmp")
-      elif jq -e '.cycle_count' "$outtmp" >/dev/null 2>&1; then
-        cycles=$(jq '.cycle_count' "$outtmp")
-      fi
-    else
-      # Fallback: grep for numbers labeled cycles or count keys
-      cycles=$(grep -Eo '"cycle_count"[[:space:]]*:[[:space:]]*[0-9]+' "$outtmp" | head -n1 | grep -Eo '[0-9]+') || true
-      if [[ -z "$cycles" ]]; then
-        cycles=$(grep -Eo '"cycles"[[:space:]]*:[[:space:]]*[0-9]+' "$outtmp" | head -n1 | grep -Eo '[0-9]+') || true
-      fi
-    fi
-
-    echo "${threads},${run},${elapsed},${rss_kb},${cycles}" >> "$OUTCSV"
-
-    rm -f "$outtmp" "$timetmp"
+    /usr/bin/time -f '%e %M' -o "$scratch/time.txt" \
+      "$binary" --graph "$graph" --threads "$threads" --output-folder "$result" \
+      > "$scratch/stdout.txt" 2> "$scratch/stderr.txt" || {
+        cat "$scratch/stderr.txt" >&2
+        fail "Zuck failed for threads=$threads run=$run"
+      }
+    read -r elapsed rss_kb < "$scratch/time.txt"
+    cycles=$(python3 - "$result/run_manifest.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as manifest:
+    print(json.load(manifest)["counts"]["loaded_cycle_records"])
+PY
+)
+    printf '%s,%s,%s,%s,%s\n' "$threads" "$run" "$elapsed" "$rss_kb" "$cycles" >> "$output"
   done
 done
-
-echo "Done. Results at: $OUTCSV"
+echo "Done. Results at: $output"

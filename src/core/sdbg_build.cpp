@@ -1,244 +1,120 @@
 #include "core/sdbg_build.h"
-#include <cstdio>
+
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <limits>
+#include <stdexcept>
+#include <vector>
 
-SDBGBuild::SDBGBuild(Settings settings) : settings(settings)
-{
-    this->BuildLib();
-    this->BuildSDBG();
+#include "io/result_bundle.h"
+#include "sequence/io/sequence_lib.h"
+#include "sorting/read_to_sdbg.h"
+#include "utils/utils.h"
+
+namespace {
+namespace fs = std::filesystem;
+
+bool has_whitespace(const std::string& path) {
+    return path.find_first_of(" \t\n\r\f\v") != std::string::npos;
 }
 
-SDBGBuild::~SDBGBuild()
-{
-    //close the lib file
-}
-
-// @brief Write the lib file
-// @details This function writes the lib file to the output folder
-// @param None
-// @return The path to the lib file
-
-std::string SDBGBuild::WriteLibFile()
-{   
-    
-    std::cout << "\n-----------------------------------------\n" << std::endl;
-    std::cout << "2. Building the SDBG: " << std::endl;
-    std::string data_lib_file_name = settings.graph_folder;  
-    
-    // Debugging: Log the intended directory
-    std::cout << "Directory: " << data_lib_file_name << std::endl;
-
-    namespace fs = std::filesystem;
-
-    fs::path resolved_path_fs(data_lib_file_name);
-
-    // Create all necessary parent directories
-    try {
-        if (!fs::exists(resolved_path_fs)) {
-            fs::create_directories(resolved_path_fs);
-            std::cout << "Directories created: " << resolved_path_fs << std::endl;
-        } else {
-            std::cout << "Directory already exists: " << resolved_path_fs << std::endl;
+// MEGAHIT's library descriptor splits paths on whitespace. Keep unique aliases
+// alive while it reads the library, without copying potentially large FASTQs.
+class ReadAliases {
+public:
+    explicit ReadAliases(std::vector<std::string> inputs) : paths(std::move(inputs)) {
+        if (std::none_of(paths.begin(), paths.end(), has_whitespace)) return;
+        fs::path temporary_root = fs::temp_directory_path();
+        if (has_whitespace(temporary_root.string())) temporary_root = "/tmp";
+        auto pattern = (temporary_root / "zuck-reads-XXXXXX").string();
+        if (!mkdtemp(pattern.data()))
+            throw std::runtime_error("Cannot create temporary read aliases");
+        directory = pattern;
+        try {
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                const auto alias = directory / ("read-" + std::to_string(i));
+                fs::create_symlink(fs::absolute(paths[i]), alias);
+                paths[i] = alias.string();
+            }
+        } catch (...) {
+            cleanup();
+            throw;
         }
-    } catch (const fs::filesystem_error& e) {
-        std::cerr << "Error creating directories: " << e.what() << std::endl;
-        return "";
     }
+    ReadAliases(const ReadAliases&) = delete;
+    ReadAliases& operator=(const ReadAliases&) = delete;
+    ~ReadAliases() { cleanup(); }
 
-    // Use std::filesystem to append to the path
-    fs::path lib_file_path = resolved_path_fs / "data.lib";
-    std::ofstream lib_file(lib_file_path, std::ios::out | std::ios::trunc);
-    if (!lib_file) {
-        std::cerr << "Error creating file: " << lib_file_path << std::endl;
-        return "";
-    }
-    string switch_str = "se";
-    // split input_files on whitespace to detect paired-end input
-    vector<string> input_tokens;
-    {
-      istringstream iss(settings.input_files);
-      string tok;
-      while (iss >> tok) input_tokens.push_back(tok);
-    }
-    if (input_tokens.size() > 1) switch_str = "pe";
-    lib_file << "#lib file for the SDBG from " + settings.input_files + "\n";
-    // Ensure lib file contains whitespace-separated file paths for the CLI tool
-    lib_file << switch_str + " " + settings.input_files;
-    lib_file.close();
-    std::cout << "Saved lib to file " << lib_file_path << std::endl;
+    std::vector<std::string> paths;
 
-    return lib_file_path.string();
+private:
+    fs::path directory;
+    void cleanup() noexcept {
+        if (directory.empty()) return;
+        std::error_code ignored;
+        fs::remove_all(directory, ignored);
+    }
+};
+} // namespace
+
+SDBGBuild::SDBGBuild(const Settings& settings) : settings(settings) {
+    BuildLib();
+    BuildSDBG();
 }
 
-// @brief Build the lib file from the input files
-// @details This function builds the lib file from the input files and the settings
-// provided by the user. It uses the buildlib tool from the Megahit library.
-// @param None
-
-void SDBGBuild::BuildLib()
-{
-    std::string path_name = WriteLibFile();
-    // following are the arguments to call <tool_name> buildlib data.lib outfile_prefix
-    char *argv[3];
-    argv[0] = "buildlib";
-    std::string full_out = settings.graph_folder + "/outfile_prefix";
-    std::string outfile_prefix = settings.graph_folder + "/graph";
-    //convert string to char*
-    argv[1] = const_cast<char*>(path_name.c_str());
-    argv[2] = const_cast<char*>(full_out.c_str());
-    std::cout << "Building the library: " ;
-    //print all the arguments
-    for(int i=0; i<3; i++){
-        std::cout << argv[i] << " ";
-    }
-    std::cout << std::endl;
-    BuildLibUtil(3, argv);
-
-    return;
-
+std::string SDBGBuild::WriteLibFile(const std::vector<std::string>& inputs) const {
+    namespace fs = std::filesystem;
+    if (inputs.empty() || inputs.size() > 2)
+        throw std::runtime_error("Graph construction requires one or two read files");
+    fs::create_directories(settings.graph_folder);
+    const auto path = fs::path(settings.graph_folder) / "data.lib";
+    std::ofstream library(path);
+    if (!library) throw std::runtime_error("Cannot create read library: " + path.string());
+    library << "# Zuck read library\n" << (inputs.size() == 2 ? "pe" : "se");
+    for (const auto& input : inputs) library << ' ' << input;
+    library << '\n';
+    result_bundle::close_checked(library, path);
+    return path.string();
 }
 
-
-bool SDBGBuild::BuildLibUtil(int argc, char **argv) {
-  AutoMaxRssRecorder recorder;
-
-  if (argc < 3) {
-    return false;
-  }
-  SequenceLibCollection::Build(argv[1], argv[2]);
-
-  return true;
+void SDBGBuild::BuildLib() const {
+    const ReadAliases aliases(settings.effective_input_reads());
+    const auto descriptor = WriteLibFile(aliases.paths);
+    const auto output_prefix = (std::filesystem::path(settings.graph_folder) / "outfile_prefix").string();
+    std::cout << "\nBuilding read library: " << descriptor << std::endl;
+    AutoMaxRssRecorder recorder;
+    SequenceLibCollection::Build(descriptor, output_prefix);
 }
 
-// @brief Build the SDBGUtil
-// @details This is a helper function to build the SDBG from the library file and the settings.
-// This is a copy of the same function - main_build_sdbg defined in libs/megahit/src/main_sdbg_build.cpp
-// @param argc The number of arguments 
-// @param argv The arguments passed to the function
-bool SDBGBuild::BuildSDBGUtil(int argc, char **argv) {
-  AutoMaxRssRecorder recorder;
-
-  // parse option the same as kmer_count
-  OptionsDescription desc;
-  Read2SdbgOption opt;
-
-  desc.AddOption("kmer_k", "k", opt.k, "kmer size");
-  desc.AddOption("min_kmer_frequency", "m", opt.solid_threshold,
-                 "min frequency to output an edge");
-  desc.AddOption(
-      "host_mem", "", opt.host_mem,
-      "Max memory to be used. 90% of the free memory is recommended.");
-  desc.AddOption("num_cpu_threads", "", opt.n_threads,
-                 "number of CPU threads. At least 2.");
-  desc.AddOption("read_lib_file", "", opt.read_lib_file,
-                 "input fast[aq] file, can be gzip'ed. \"-\" for stdin.");
-  desc.AddOption("output_prefix", "", opt.output_prefix, "output prefix");
-  desc.AddOption("mem_flag", "", opt.mem_flag,
-                 "memory options. 0: minimize memory usage; 1: automatically "
-                 "use moderate memory; "
-                 "other: use all "
-                 "available mem specified by '--host_mem'");
-  desc.AddOption("need_mercy", "", opt.need_mercy, "to add mercy edges.");
-
-  try {
-    desc.Parse(argc, argv);
-
-    if (opt.read_lib_file.empty()) {
-      throw std::logic_error("No input file!");
-    }
-
-    if (opt.n_threads == 0) {
-      opt.n_threads = omp_get_max_threads();
-    }
-
-    if (opt.host_mem == 0) {
-      throw std::logic_error("Please specify the host memory!");
-    }
-  } catch (std::exception &e) {
-    std::cerr << e.what() << std::endl;
-    std::cerr
-        << "Usage: sdbg_builder read2sdbg --read_lib_file fastx_file -o out"
-        << std::endl;
-    std::cerr << "Options:" << std::endl;
-    std::cerr << desc << std::endl;
-    exit(1);
-  }
-
-  SeqPkgWithSolidMarker pkg;
-
-  {
-    // stage 1
-    Read2SdbgS1 runner(opt, &pkg);
-    if (opt.solid_threshold > 1) {
-      runner.Run();
-    } else {
-      runner.Initialize();
-    }
-  }
-
-  {
-    // stage 2
-    Read2SdbgS2 runner(opt, &pkg);
-    runner.Run();
-  }
-
-  return 0;
-}
-
-// @brief Build the SDBG
-// @details This function builds the SDBG from the library file and the settings
-// provided by the user. It uses the read2sdbg tool from the Megahit library.
-// @param None
-void SDBGBuild::BuildSDBG()
-{
-    // these are the arguments passed - make them into a char array
-    // megahit_core read2sdbg --host_mem 128000000000 --read_lib_file outfile_prefix -m 1 -k 21 --num_cpu_threads 48
-    // convert double to string 
-
-    // Settings stores the user-facing value in GiB; MEGAHIT's host_mem API
-    // consumes bytes. v1.0.0 passed values such as "8.0" as eight bytes,
-    // forcing MEGAHIT into its fallback minimum-memory plan.
-    const long double host_mem_exact =
-        static_cast<long double>(settings.ram) * 1024.0L * 1024.0L * 1024.0L;
-    if (!std::isfinite(static_cast<double>(host_mem_exact)) ||
-        host_mem_exact < 1.0L ||
-        host_mem_exact > static_cast<long double>(std::numeric_limits<int64_t>::max())) {
+void SDBGBuild::BuildSDBG() const {
+    // Settings uses GiB; MEGAHIT consumes bytes. Check before narrowing so a
+    // large or non-finite request cannot wrap into an unrelated memory budget.
+    const long double bytes = static_cast<long double>(settings.ram) * 1024 * 1024 * 1024;
+    if (!std::isfinite(bytes) || bytes < 1 ||
+        bytes > static_cast<long double>(std::numeric_limits<int64_t>::max()))
         throw std::runtime_error("Requested graph memory is outside the supported range");
-    }
-    const int64_t host_mem_bytes = static_cast<int64_t>(host_mem_exact);
-    std::string host_mem = std::to_string(host_mem_bytes);
-    std::string num_cpu_threads = std::to_string(settings.threads);
-    std::string read2sdbg = "read2sdbg";
-    std::string host_mem_flag = "--host_mem";
-    std::string read_lib_file_flag = "--read_lib_file";
-    std::string full_out = settings.graph_folder + "/outfile_prefix";
-    // convert string to char*  
-    // Create a vector to hold the arguments
-    std::vector<std::string> args = {
-        read2sdbg,
-        host_mem_flag,
-        host_mem,
-        read_lib_file_flag,
-        full_out,
-        "-m", "1",
-        "-k", "23",
-        "--num_cpu_threads", num_cpu_threads,
-        "--o", settings.graph_folder + "/graph"
-    };
 
-    std::cout << "  ▸ MEGAHIT memory budget: " << host_mem_bytes
+    Read2SdbgOption options;
+    options.k = 23;
+    options.solid_threshold = 1;
+    options.host_mem = static_cast<int64_t>(bytes);
+    options.n_threads = settings.threads;
+    options.read_lib_file = (std::filesystem::path(settings.graph_folder) / "outfile_prefix").string();
+    options.output_prefix = (std::filesystem::path(settings.graph_folder) / "graph").string();
+    std::cout << "  ▸ MEGAHIT memory budget: " << static_cast<int64_t>(bytes)
               << " bytes (" << settings.ram << " GiB)" << std::endl;
 
-    // Create a vector of char* to pass to the function
-    std::vector<char*> argv;
-    for (auto& arg : args) {
-        argv.push_back(&arg[0]);
+    AutoMaxRssRecorder recorder;
+    SeqPkgWithSolidMarker package;
+    {
+        Read2SdbgS1 stage_one(options, &package);
+        // With threshold one, initialization loads all edges without counting.
+        stage_one.Initialize();
     }
-
-    // Now argv can be used as a char* array
-    this->BuildSDBGUtil(argv.size(), argv.data());
-    std::cout << "\n-----------------------------------------\n" << std::endl;
-    return;
+    Read2SdbgS2 stage_two(options, &package);
+    stage_two.Run();
 }

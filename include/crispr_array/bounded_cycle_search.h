@@ -1,5 +1,5 @@
-#ifndef MY_MCAAT_BOUNDED_CYCLE_SEARCH_H
-#define MY_MCAAT_BOUNDED_CYCLE_SEARCH_H
+#ifndef ZUCK_BOUNDED_CYCLE_SEARCH_H
+#define ZUCK_BOUNDED_CYCLE_SEARCH_H
 
 #include <algorithm>
 #include <cstdint>
@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace my_mcaat {
+namespace Zuck {
 
 template <typename VisitedSet = std::unordered_set<uint64_t>>
 struct BoundedCycleWorkspace {
@@ -51,6 +51,6 @@ bool HasBoundedPath(uint64_t start, uint64_t target, int limit,
     return false;
 }
 
-}  // namespace my_mcaat
+}  // namespace Zuck
 
 #endif

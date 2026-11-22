@@ -14,3 +14,6 @@ test_ids
 /_build/
 /_deps/
 /.work/
+__pycache__/
+*.py[cod]
+/dist/

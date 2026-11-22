@@ -8,7 +8,7 @@ from pathlib import Path
 
 def main() -> None:
     binary = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="my-mcaat-io-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="zuck-io-") as scratch:
         root = Path(scratch)
         output = root / "output"
         output.mkdir()

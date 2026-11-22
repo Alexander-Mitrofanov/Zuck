@@ -8,20 +8,10 @@ void trim_string(string& s) {
 pair<string, optional<string>> get_fastq_files_from_settings(
     const Settings& settings
 ) {
-    const bool two_fastq_files_provided = settings.input_files.find(" ") != string::npos;
-    if (two_fastq_files_provided) {
-        const size_t space_pos = settings.input_files.find(" ");
-        string input_file1 = settings.input_files.substr(0, space_pos);
-        string input_file2 = settings.input_files.substr(space_pos + 1);
-        cout<<"  ▸ Two fastq files provided located at " << input_file1 << " and " << input_file2 << endl;
-        trim_string(input_file1);
-        trim_string(input_file2);
-
-        return std::make_pair(input_file1, optional<string>(input_file2));
-    } else {
-        cout<<"  ▸ Only one fastq file provided located at " << settings.input_files << endl;
-        return std::make_pair(settings.input_files, std::nullopt);
-    }
+    const auto files = settings.effective_input_reads();
+    if (files.empty() || files.size() > 2)
+        throw std::runtime_error("Expected one or two input read files");
+    return {files[0], files.size() == 2 ? optional<string>(files[1]) : std::nullopt};
 }
 
 vector<vector<uint64_t>> cycles_map_to_cycles(
@@ -41,11 +31,7 @@ vector<vector<uint64_t>> cycles_map_to_cycles(
 int get_cycle_count(
     const vector<vector<uint64_t>>& cycles
 ) {
-    int count = 0;
-    for (const auto& cycle : cycles) {
-        count += cycle.size();
-    }
-    return count;
+    return static_cast<int>(cycles.size());
 }
 
 void print_sdbg_graph_to_dot_file_convert(const string& lib_file_path) {
@@ -63,8 +49,8 @@ void print_sdbg_graph_to_dot_file_convert(const string& lib_file_path) {
     for (size_t node = 0; node < sdbg.size(); ++node) {
         int outdegree = sdbg.EdgeOutdegree(node);
         if (outdegree > 0) {
-            uint64_t* outgoings = new uint64_t[outdegree];
-            if (sdbg.OutgoingEdges(node, outgoings) != -1) {
+            vector<uint64_t> outgoings(outdegree);
+            if (sdbg.OutgoingEdges(node, outgoings.data()) != -1) {
                 for (int i = 0; i < outdegree; ++i) {
                     const uint64_t neighbor = outgoings[i];
                     if (!sdbg.IsValidEdge(neighbor)) continue;
@@ -72,7 +58,6 @@ void print_sdbg_graph_to_dot_file_convert(const string& lib_file_path) {
                     std::cout << "    " << node << " -> " << neighbor << ";\n";
                 }
             }
-            delete[] outgoings;
         }
     }
 
@@ -82,128 +67,21 @@ void print_sdbg_graph_to_dot_file_convert(const string& lib_file_path) {
 
 
 string fetch_node_label(SDBG& sdbg, const size_t& node) {
+    if (node >= sdbg.size()) throw std::out_of_range("Path node is outside the graph");
     string label;
-    uint8_t seq[sdbg.k()];
-    uint32_t t = sdbg.GetLabel(node, seq);
-    for (int i = sdbg.k() - 1; i >= 0; --i) label.append(1, "ACGT"[seq[i] - 1]);
-    reverse(label.begin(), label.end());
+    vector<uint8_t> bases(sdbg.k());
+    sdbg.GetLabel(node, bases.data());
+    for (auto base : bases) label += base >= 1 && base <= 4 ? "ACGT"[base - 1] : 'N';
     return label;
-}
-
-pair<vector<uint64_t>, string> Find_CRISPR_repeat_nodes_and_sequence(
-    SDBG& sdbg,
-    const vector<vector<uint64_t>>& ordered_cycles
-) {
-    const int threshold = static_cast<int>(0.9 * static_cast<float>(ordered_cycles.size()) + 0.5);
-    
-    unordered_map<uint64_t, int> element_count;
-    for (const auto& cycle : ordered_cycles) {
-        for (const auto& element : cycle) {
-            element_count[element]++;
-        }
-    }
-
-    // Get all repeat_nodes
-    vector<uint64_t> repeat_nodes;
-    unordered_set<uint64_t> repeat_nodes_set;
-    for (const auto& cycle : ordered_cycles) {
-        bool passed_spacers = false;
-        bool going_through_repeat_region = false;
-        int loop_counter = 0;
-
-        // The spacers might wrap around, therefore go through cycle twice:
-        // Starting with S -> SSSSSRRRRRSSSSS SSSSSRRRRRSSSSS
-        // Starting with R -> RRRRRSSSSSRRRRR RRRRRSSSSSRRRRR
-        while (loop_counter < 2) {
-            for (const auto& node : cycle) {
-                bool is_spacer_node = element_count[node] < threshold;
-                if (is_spacer_node) {
-                    passed_spacers = true;
-                    if (going_through_repeat_region) {
-                        break;
-                    }
-                } else if (passed_spacers) {
-                    going_through_repeat_region = true;
-                    bool already_in_set = repeat_nodes_set.insert(node).second;
-                    if (!already_in_set) {
-                        repeat_nodes.push_back(node);
-                    }
-                }
-            }
-
-            loop_counter++;
-        }
-        for (const auto& [element, count] : element_count) {
-            if (static_cast<float>(count) >= threshold) {
-                repeat_nodes.push_back(element);
-            }
-        }
-    }
-
-    // Choose repeat node sequence that occur the most
-    int repeat_nodes_count = 0;
-    int best_idx = 0;
-    for (int i = 0; i < ordered_cycles.size(); ++i) {
-        const auto cycle = ordered_cycles.at(i);
-
-        int current_repeat_nodes_count = 0;
-        for (const auto& node : cycle) {
-            bool is_repeat = std::find(repeat_nodes.begin(), repeat_nodes.end(), node) != repeat_nodes.end();
-            if (is_repeat) {
-                current_repeat_nodes_count += element_count[node];
-            }
-        }
-
-        if (current_repeat_nodes_count > repeat_nodes_count) {
-            repeat_nodes_count = current_repeat_nodes_count;
-            best_idx = i;
-        }
-    }
-
-    // Fetch best sequence of repeat nodes
-    string repeat = "";
-    bool passed_spacers = false;
-    bool going_through_repeat_region = false;
-    int loop_counter = 0;
-
-    // The spacers might wrap around, therefore go through cycle twice:
-    // Starting with S -> SSSSSRRRRRSSSSS SSSSSRRRRRSSSSS
-    // Starting with R -> RRRRRSSSSSRRRRR RRRRRSSSSSRRRRR
-    while (loop_counter < 2) {
-        for (const auto& node : ordered_cycles.at(best_idx)) {
-            bool is_repeat_node = std::find(repeat_nodes.begin(), repeat_nodes.end(), node) != repeat_nodes.end();
-            if (!is_repeat_node) {
-                passed_spacers = true;
-                if (going_through_repeat_region) {
-                    // Idk why, but one letter is missing
-                    char new_char = fetch_node_label(sdbg, node).back();
-                    string new_char_str(1, new_char);
-                    repeat += new_char_str;
-                    break;
-                }
-            } else if (passed_spacers) {
-                going_through_repeat_region = true;
-                if (repeat == "") {
-                    repeat = fetch_node_label(sdbg, node);
-                } else {
-                    char new_char = fetch_node_label(sdbg, node).back();
-                    string new_char_str(1, new_char);
-                    repeat += new_char_str;
-                }
-            }
-        }
-
-        loop_counter++;
-    }
-
-    return {repeat_nodes, repeat};
 }
 
 tuple<string, vector<string>, string> get_systems(
     SDBG& sdbg,
     vector<vector<uint64_t>>& ordered_cycles
 ) {
-    int smallest_cycle_size = ordered_cycles.at(0).size();
+    if (ordered_cycles.empty() || std::any_of(ordered_cycles.begin(), ordered_cycles.end(),
+            [](const auto& cycle) { return cycle.empty(); })) return {};
+    size_t smallest_cycle_size = ordered_cycles.front().size();
     for (const auto& cycle : ordered_cycles) {
         if (cycle.size() < smallest_cycle_size) {
             smallest_cycle_size = cycle.size();
@@ -211,8 +89,8 @@ tuple<string, vector<string>, string> get_systems(
     }
 
     /* Repeat node extend to the right */
-    int extension_to_right = 0;
-    for (int i = 0; i < smallest_cycle_size - 1; ++i) {
+    size_t extension_to_right = 0;
+    for (size_t i = 0; i + 1 < smallest_cycle_size; ++i) {
         unordered_set<char> next_bp;
         for (const auto& cycle : ordered_cycles) {
             const uint64_t current_node = cycle.at(i);
@@ -238,8 +116,8 @@ tuple<string, vector<string>, string> get_systems(
     }
 
     /* Repeat node extend to the left */
-    int extension_to_left = 0;
-    for (int i = 0; i < smallest_cycle_size - 1; ++i) {
+    size_t extension_to_left = 0;
+    for (size_t i = 0; i + 1 < smallest_cycle_size; ++i) {
         unordered_set<char> prev_bp;
         for (const auto& cycle: ordered_cycles) {
             const uint64_t current_node = cycle.at(cycle.size() - i - 1);
@@ -264,7 +142,8 @@ tuple<string, vector<string>, string> get_systems(
         }
     }
 
-    const int repeat_length = extension_to_left + extension_to_right - sdbg.k();
+    const auto shared_extension = extension_to_left + extension_to_right;
+    const size_t repeat_length = shared_extension > sdbg.k() ? shared_extension - sdbg.k() : 0;
 
     /* Turn cycles into repeats and spacers */
     vector<string> spacers;
@@ -273,9 +152,9 @@ tuple<string, vector<string>, string> get_systems(
         string spacer;
         string repeat;
 
-        const int offset_repeat = cycle.size() - extension_to_left;
+        const size_t offset_repeat = cycle.size() - extension_to_left;
 
-        for (int i = 0; i < cycle.size(); ++i) {
+        for (size_t i = 0; i < cycle.size(); ++i) {
             const uint64_t node = cycle.at((offset_repeat + i) % cycle.size());
             const string label = fetch_node_label(sdbg, node);
             
@@ -299,7 +178,7 @@ tuple<string, vector<string>, string> get_systems(
     string consensus_repeat = "";
     int max_count = 0;
     for (const auto& [repeat, count] : repeat_count) {
-        if (count > max_count) {
+        if (count > max_count || (count == max_count && repeat < consensus_repeat)) {
             max_count = count;
             consensus_repeat = repeat;
         }
@@ -307,7 +186,7 @@ tuple<string, vector<string>, string> get_systems(
 
     /* Reconstruct sequences */
     string full_sequence = "";
-    for (int i = 0; i < spacers.size(); ++i) {
+    for (size_t i = 0; i < spacers.size(); ++i) {
         const string repeat = repeats.at(i);
         const string spacer = spacers.at(i);
 
@@ -317,7 +196,7 @@ tuple<string, vector<string>, string> get_systems(
         }
     }
 
-    /* crispr sequence end with a repat (usually mutated), tmp taking consensus repeat */
+    // This experimental reconstruction assumes a terminal consensus repeat.
     full_sequence += consensus_repeat;
 
     return std::make_tuple(consensus_repeat, spacers, full_sequence);

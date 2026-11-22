@@ -1,48 +1,60 @@
 #include "io/io_ops.h"
-#ifdef DE
+#ifdef DEBUG
+#include <fstream>
+#include <stdexcept>
+#include "io/result_bundle.h"
+#include "core/option_values.h"
 
 std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>> io_ops::read_cycles(const std::string& file_path) {
     std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>> cycles;
     std::ifstream file(file_path);
     if (!file.is_open()) {
-        std::cerr << "Error opening file: " << file_path << std::endl;
-        return cycles;
+        throw std::runtime_error("Cannot open cycle JSON: " + file_path);
     }
-    json j;
-    file >> j;
-    for (auto& [key, value] : j.items()) {
-        uint64_t cycle_id = std::stoull(key);
-        std::vector<std::vector<uint64_t>> cycle_vec;
-        for (const auto& arr : value) {
-            std::vector<uint64_t> inner_vec = arr.get<std::vector<uint64_t>>();
-            cycle_vec.push_back(inner_vec);
+    const auto document = json::parse(file);
+    if (!document.is_object())
+        throw std::runtime_error("Cycle JSON must be an object of path arrays: " + file_path);
+    for (const auto& [key, paths] : document.items()) {
+        const auto cycle_id = Zuck::options::unsigned_integer(key, "cycle ID");
+        if (!paths.is_array())
+            throw std::runtime_error("Cycle JSON group must contain an array of paths: " + key);
+        std::vector<std::vector<uint64_t>> group;
+        for (const auto& path : paths) {
+            if (!path.is_array())
+                throw std::runtime_error("Cycle JSON path must be an array: " + key);
+            std::vector<uint64_t> nodes;
+            for (const auto& node : path) {
+                if (!node.is_number_integer() ||
+                    (!node.is_number_unsigned() && node.get<int64_t>() < 0))
+                    throw std::runtime_error("Cycle JSON nodes must be nonnegative integers: " + key);
+                nodes.push_back(node.get<uint64_t>());
+            }
+            group.push_back(std::move(nodes));
         }
-        cycles[cycle_id] = cycle_vec;
+        if (!cycles.emplace(cycle_id, std::move(group)).second)
+            throw std::runtime_error("Cycle JSON contains duplicate numeric IDs: " + key);
     }
-    file.close();
     return cycles;
 }
 
 void io_ops::write_cycles(const std::string& file_path, const std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>>& cycles) {
-    json j;
+    json j = json::object();
     for (const auto& [cycle_id, cycle_vec] : cycles) {
         j[std::to_string(cycle_id)] = cycle_vec;
     }
     std::ofstream file(file_path);
     if (!file.is_open()) {
-        std::cerr << "Error opening file: " << file_path << std::endl;
-        return;
+        throw std::runtime_error("Cannot create cycle JSON: " + file_path);
     }
     file << j.dump(4); // Dump with indentation of 4 spaces
-    file.close();
+    result_bundle::close_checked(file, file_path);
 }
 
 
 void io_ops::write_nodes_gfa(const std::string& file_path, const SDBG& sdbg) {
     std::ofstream file(file_path);
     if (!file.is_open()) {
-        std::cerr << "Error opening GFA file: " << file_path << std::endl;
-        return;
+        throw std::runtime_error("Cannot create graph GFA: " + file_path);
     }
     // Write segments (nodes)
     for (uint64_t edge_id = 0; edge_id < sdbg.size(); ++edge_id) {
@@ -63,7 +75,7 @@ void io_ops::write_nodes_gfa(const std::string& file_path, const SDBG& sdbg) {
             }
         }
     }
-    file.close();
+    result_bundle::close_checked(file, file_path);
 }
 
 #endif

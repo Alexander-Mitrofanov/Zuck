@@ -159,7 +159,7 @@ int main() {
     harness = harness.replace("__NODE_CONTAINER__", nodes.group(0)).replace(
         "__PRODUCTION_METHOD__", method.group(0)
     )
-    with tempfile.TemporaryDirectory(prefix="my-mcaat-enumeration-test-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="zuck-enumeration-test-") as scratch:
         binary = str(Path(scratch) / "test-enumeration")
         compiler = shlex.split(os.environ.get("CXX", "c++"))
         subprocess.run(

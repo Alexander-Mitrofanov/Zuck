@@ -1,5 +1,16 @@
 #include "crispr_array/spacer_ordering.h"
 
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include "sdbg/sdbg.h"
+#include "core/cft.hpp"
+#include "core/Instance.hpp"
+#include "algorithms/Refinement.hpp"
+
+using namespace std;
+
 void find_strongly_connected_components_dfs(
     const uint64_t node,
     const SDBG& sdbg,
@@ -18,8 +29,8 @@ void find_strongly_connected_components_dfs(
 
     int outdegree = sdbg.EdgeOutdegree(node);
     if (outdegree > 0) {
-        uint64_t* outgoings = new uint64_t[outdegree];
-        if (sdbg.OutgoingEdges(node, outgoings) != -1) {
+        std::vector<uint64_t> outgoings(outdegree);
+        if (sdbg.OutgoingEdges(node, outgoings.data()) != -1) {
             for (int i = 0; i < outdegree; ++i) {
                 const uint64_t neighbor = outgoings[i];
                 if (!sdbg.IsValidEdge(neighbor)) continue;
@@ -32,7 +43,6 @@ void find_strongly_connected_components_dfs(
                 }
             }
         }
-        delete[] outgoings;
     }
 
     if (lowlink_map[node] == index_map[node]) {
@@ -100,26 +110,24 @@ void keep_crispr_regions_extended_by_k(
 
             int indegree = sdbg.EdgeIndegree(edge);
             if (indegree > 0) {
-                uint64_t* incomings = new uint64_t[indegree];
-                if (sdbg.IncomingEdges(edge, incomings) != -1) {
+                std::vector<uint64_t> incomings(indegree);
+                if (sdbg.IncomingEdges(edge, incomings.data()) != -1) {
                     for (int i = 0; i < indegree; ++i) {
                         const uint64_t neighbor = incomings[i];
                         new_edges.push_back(neighbor);
                     }
                 }
-                delete[] incomings;
             }
 
             int outdegree = sdbg.EdgeOutdegree(edge);
             if (outdegree > 0) {
-                uint64_t* outgoings = new uint64_t[outdegree];
-                if (sdbg.OutgoingEdges(edge, outgoings) != -1) {
+                std::vector<uint64_t> outgoings(outdegree);
+                if (sdbg.OutgoingEdges(edge, outgoings.data()) != -1) {
                     for (int i = 0; i < outdegree; ++i) {
                         const uint64_t neighbor = outgoings[i];
                         new_edges.push_back(neighbor);
                     }
                 }
-                delete[] outgoings;
             }
         }
 
@@ -146,23 +154,22 @@ vector<Graph> divide_graph_into_subgraphs(const SDBG& sdbg) {
     for (size_t comp_idx = 0; comp_idx < components.size(); ++comp_idx) {
         const auto& component = components[comp_idx];
         Graph subgraph;
-        
+        const std::unordered_set<uint64_t> component_nodes(component.begin(), component.end());
         for (const uint64_t edge_id : component) {
             if (!sdbg.IsValidEdge(edge_id)) continue;
             
             int outdegree = sdbg.EdgeOutdegree(edge_id);
             if (outdegree > 0) {
-                uint64_t* outgoings = new uint64_t[outdegree];
-                if (sdbg.OutgoingEdges(edge_id, outgoings) != -1) {
+                std::vector<uint64_t> outgoings(outdegree);
+                if (sdbg.OutgoingEdges(edge_id, outgoings.data()) != -1) {
                     for (int i = 0; i < outdegree; ++i) {
                         const uint64_t neighbor = outgoings[i];
                         // Only add edge if neighbor is in the same component
-                        if (std::find(component.begin(), component.end(), neighbor) != component.end()) {
+                        if (component_nodes.count(neighbor)) {
                             subgraph.add_edge(edge_id, neighbor);
                         }
                     }
                 }
-                delete[] outgoings;
             }
         }
         
@@ -190,8 +197,8 @@ vector<vector<uint64_t>> get_relevant_reads(
     vector<vector<uint64_t>> relevant_reads;
 
     for (const auto& read : all_reads) {
-        if (graph.nodes.find(read.at(0)) != graph.nodes.end()
-        || graph.nodes.find(read.at(read.size() - 1)) != graph.nodes.end()) {
+        if (read.empty()) continue;
+        if (graph.nodes.count(read.front()) || graph.nodes.count(read.back())) {
             relevant_reads.push_back(read);
         }
     }
@@ -206,6 +213,7 @@ vector<vector<uint64_t>> get_relevant_cycles(
     vector<vector<uint64_t>> relevant_cycles;
 
     for (const auto& cycle : all_cycles) {
+        if (cycle.empty()) continue;
         bool all_nodes_in_graph = true;
         for (uint64_t node : cycle) {
             if (graph.nodes.find(node) == graph.nodes.end()) {
@@ -254,17 +262,18 @@ void get_minimum_cycles_for_full_coverage(vector<vector<uint64_t>>& cycles) {
         return;
     }
 
-    vector<size_t> kept_indices = solve_min_cover_problem(universe, sets);
-    std::sort(kept_indices.begin(), kept_indices.end(), std::greater<size_t>());
-    
-    for (size_t i = 0; i < cycles.size(); ++i) {
-        size_t idx = cycles.size() - 1 - i;
-        if (std::find(kept_indices.begin(), kept_indices.end(), idx) != kept_indices.end()) {
-            continue;
-        }
-
-        cycles.erase(cycles.begin() + idx);
+    const auto kept_indices = solve_min_cover_problem(universe, sets);
+    std::vector<bool> keep(cycles.size(), false);
+    for (const auto index : kept_indices) keep.at(index) = true;
+    // Compact once in input order. Erasing while using the shrinking size as
+    // the loop bound used to skip rejected cycles near the beginning.
+    std::size_t retained = 0;
+    for (std::size_t index = 0; index < cycles.size(); ++index) {
+        if (!keep[index]) continue;
+        if (retained != index) cycles[retained] = std::move(cycles[index]);
+        ++retained;
     }
+    cycles.resize(retained);
 }
 
 vector<size_t> solve_min_cover_problem(
@@ -316,40 +325,30 @@ vector<size_t> solve_min_cover_problem(
 unordered_map<uint64_t, uint32_t> get_node_to_unique_cycle_map(
     const vector<vector<uint64_t>>& cycles
 ) {
-    vector<unordered_set<uint64_t>> cycle_node_sets;
-    for (const auto& cycle : cycles) {
-        cycle_node_sets.emplace_back(cycle.begin(), cycle.end());
-    }
-
-    unordered_map<uint64_t, uint32_t> node_to_cycle_map;
-    for (uint32_t i = 0; i < cycle_node_sets.size(); ++i) {
-        // Build union of all other sets
-        unordered_set<uint64_t> other_nodes;
-        for (uint32_t j = 0; j < cycle_node_sets.size(); ++j) {
-            if (j == i) continue;
-            other_nodes.insert(cycle_node_sets[j].begin(), cycle_node_sets[j].end());
-        }
-        // Find unique nodes in cycle i
-        for (const uint64_t node : cycle_node_sets[i]) {
-            if (other_nodes.find(node) == other_nodes.end()) {
-                node_to_cycle_map[node] = i;
-            }
+    unordered_map<uint64_t, uint32_t> owners;
+    for (uint32_t index = 0; index < cycles.size(); ++index) {
+        for (uint64_t node : cycles[index]) {
+            const auto [found, inserted] = owners.emplace(node, index);
+            // Repeated nodes within the same cycle do not disqualify it.
+            if (!inserted && found->second != index)
+                found->second = NOT_IN_ANY_CYCLE_INDEX;
         }
     }
-    return node_to_cycle_map;
+    for (auto entry = owners.begin(); entry != owners.end();) {
+        if (entry->second == NOT_IN_ANY_CYCLE_INDEX) entry = owners.erase(entry);
+        else ++entry;
+    }
+    return owners;
 }
 
 vector<uint32_t> get_all_cycle_indices(
     const unordered_map<uint64_t, uint32_t>& node_to_cycle_map
 ) {
     vector<uint32_t> cycle_indices;
-
-    for (const auto& [node, cycle_idx] : node_to_cycle_map) {
-        if (std::find(cycle_indices.begin(), cycle_indices.end(), cycle_idx) == cycle_indices.end()) {
-            cycle_indices.push_back(cycle_idx);
-        }
-    }
-
+    cycle_indices.reserve(node_to_cycle_map.size());
+    for (const auto& [node, cycle] : node_to_cycle_map) cycle_indices.push_back(cycle);
+    std::sort(cycle_indices.begin(), cycle_indices.end());
+    cycle_indices.erase(std::unique(cycle_indices.begin(), cycle_indices.end()), cycle_indices.end());
     return cycle_indices;
 }
 
@@ -385,30 +384,11 @@ vector<tuple<uint32_t, uint32_t>> generate_constraints_from_read(
         }
     }
 
-    // Merge common neighbors: A,A,B,C,C,C -> A,B,C
-    vector<uint32_t> cycle_indices_merged;
-    optional<uint32_t> last_cycle_index;
-    for (size_t i = 0; i < cycle_indices_in_order.size(); ++i) {
-        const uint32_t cycle_index = cycle_indices_in_order.at(i);
-
-        if (i == 0 || !last_cycle_index || cycle_index != *last_cycle_index) {
-            cycle_indices_merged.push_back(cycle_index);
-            last_cycle_index = std::make_optional(cycle_index);
-        }
-    }
-
+    // A run of k-mers from one cycle supplies one ordering observation.
+    cycle_indices_in_order.erase(
+        std::unique(cycle_indices_in_order.begin(), cycle_indices_in_order.end()),
+        cycle_indices_in_order.end());
     return every_possible_combination(cycle_indices_in_order);
-
-    // Only have direct neighbors (through benchmarking it led to worse results)
-    // vector<tuple<uint32_t, uint32_t>> derived_constraints;
-    // for (int i = 0; i < cycle_indices_merged.size() - 1; ++i) {
-    //     const uint32_t cycle_index = cycle_indices_merged.at(i);
-    //     const uint32_t cycle_index_next = cycle_indices_merged.at(i + 1);
-
-    //     derived_constraints.push_back(std::make_tuple(cycle_index, cycle_index_next));
-    // }
-
-    // return derived_constraints;
 }
 
 vector<tuple<uint32_t, uint32_t>> generate_out_of_cycles_constraints_from_read(
@@ -416,46 +396,21 @@ vector<tuple<uint32_t, uint32_t>> generate_out_of_cycles_constraints_from_read(
     const vector<uint64_t>& read,
     const unordered_map<uint64_t, uint32_t>& node_to_cycle_map
 ) {
-    if (node_to_cycle_map.find(read.at(0)) == node_to_cycle_map.end()
-    || node_to_cycle_map.find(read.at(read.size() - 1)) == node_to_cycle_map.end()) {
-        return {};
+    vector<tuple<uint32_t, uint32_t>> constraints;
+    if (read.empty()) return constraints;
+    auto cycle_for = [&](uint64_t node) {
+        const auto found = node_to_cycle_map.find(node);
+        return found == node_to_cycle_map.end() ? NOT_IN_ANY_CYCLE_INDEX : found->second;
+    };
+    uint32_t previous = cycle_for(read.front());
+    for (std::size_t i = 1; i < read.size(); ++i) {
+        const uint32_t current = cycle_for(read[i]);
+        if (current != previous &&
+            (current == NOT_IN_ANY_CYCLE_INDEX || previous == NOT_IN_ANY_CYCLE_INDEX))
+            constraints.emplace_back(previous, current);
+        previous = current;
     }
-
-    vector<uint32_t> cycle_indices_in_order;
-    for (const auto& node_id : read) {
-        const auto it = node_to_cycle_map.find(node_id);
-
-        uint32_t cycle_index;
-        if (it == node_to_cycle_map.end()) {
-            cycle_index = NOT_IN_ANY_CYCLE_INDEX;
-        } else {
-            cycle_index = it->second;
-        }
-
-        cycle_indices_in_order.push_back(cycle_index);
-    }
-
-    // Merge common neighbors: A,A,B,C,C,C -> A,B,C
-    vector<uint32_t> cycle_indices_merged;
-    optional<uint32_t> last_cycle_index;
-    for (size_t i = 0; i < cycle_indices_in_order.size(); ++i) {
-        const uint32_t cycle_index = cycle_indices_in_order.at(i);
-
-        if (i == 0 || !last_cycle_index || cycle_index != *last_cycle_index) {
-            cycle_indices_merged.push_back(cycle_index);
-            last_cycle_index = std::make_optional(cycle_index);
-        }
-    }
-
-    vector<tuple<uint32_t, uint32_t>> derived_constraints;
-    if (cycle_indices_merged.size() > 1) {
-        const uint32_t cycle_index = cycle_indices_merged.at(0);
-        const uint32_t cycle_index_next = cycle_indices_merged.at(1);
-
-        derived_constraints.push_back(std::make_tuple(cycle_index, cycle_index_next));
-    }
-
-    return derived_constraints;
+    return constraints;
 }
 
 vector<tuple<uint32_t, uint32_t>> generate_constraints(
@@ -580,79 +535,45 @@ void apply_topological_sort(
     vector<uint32_t>& total_order,
     float& confidence
 ) {
-    if (possible_start_nodes.empty()) {
-        return;
-    }
-    
-    // Choose start_node by the heuristic
-    int best_start_node = 0;
-    float best_heuristic_value = std::numeric_limits<float>::lowest();
-    float total_heuristic_value_summed = 0.0;
-    
-    for (size_t i = 0; i < possible_start_nodes.size(); ++i) {
-        const uint32_t node = possible_start_nodes[i];
-        const float current_affection = static_cast<float>(node_affection_to_start.at(node));
-        const float current_other_heuristic_value = static_cast<float>(heuristic_node_values.at(node));
-
-        // Apply good heuristic weight here
-        const float current_heuristic_value = current_affection * 1.0 + current_other_heuristic_value;
-        if (current_heuristic_value >= best_heuristic_value) {
-            best_heuristic_value = current_heuristic_value;
-            best_start_node = i;
-        }
-
-        total_heuristic_value_summed += std::abs(current_heuristic_value);
-    }
-
-    confidence += (std::abs(best_heuristic_value) / total_heuristic_value_summed);
-
-    uint32_t start_node = possible_start_nodes[best_start_node];
-    total_order.push_back(start_node);
-
-    // Remove the start_node as choosable (by index, not value)
-    possible_start_nodes.erase(possible_start_nodes.begin() + best_start_node);
-
-    // Removes every edge containing the start_node
-    vector<uint32_t> start_node_candidates;
-    vector<tuple<uint32_t, uint32_t>> edges_to_remove;
-    for (const auto& [edge, weight] : edges) {
-        const auto from = std::get<0>(edge);
-        const auto to = std::get<1>(edge);
-
-        if (from == start_node) {
-            start_node_candidates.push_back(to);
-            heuristic_node_values[to] += weight;
-            edges_to_remove.push_back(edge);
-        }
-    }
-    for (const auto& edge : edges_to_remove) {
-        edges.erase(edge);
-    }
-
-    // Finding new possible start nodes
-    for (const auto& start_node_candidate : start_node_candidates) {
-        bool has_other_incoming = false;
-        for (const auto& [edge, _weight] : edges) {
-            const auto to = std::get<1>(edge);
-
-            if (to == start_node_candidate) {
-                has_other_incoming = true;
-                break;
+    // Iteration avoids a call-stack frame for every ordered spacer. Sorted
+    // IDs resolve ties consistently, including when no heuristic evidence exists.
+    while (!possible_start_nodes.empty()) {
+        std::size_t best = 0;
+        float best_value = std::numeric_limits<float>::lowest();
+        float total_weight = 0.0f;
+        for (std::size_t i = 0; i < possible_start_nodes.size(); ++i) {
+            const uint32_t node = possible_start_nodes[i];
+            const auto affection = node_affection_to_start.find(node);
+            const float value = static_cast<float>(
+                affection == node_affection_to_start.end() ? 0 : affection->second) +
+                static_cast<float>(heuristic_node_values[node]);
+            if (value > best_value ||
+                (value == best_value && node < possible_start_nodes[best])) {
+                best = i;
+                best_value = value;
             }
+            total_weight += std::abs(value);
         }
-        if (!has_other_incoming) {
-            possible_start_nodes.push_back(start_node_candidate);
+        // Zero evidence is uncertainty, not NaN or a claim of certainty.
+        if (total_weight > 0.0f) confidence += std::abs(best_value) / total_weight;
+        const uint32_t chosen = possible_start_nodes[best];
+        total_order.push_back(chosen);
+        possible_start_nodes.erase(possible_start_nodes.begin() + best);
+
+        vector<uint32_t> candidates;
+        for (auto edge = edges.begin(); edge != edges.end();) {
+            const auto [from, to] = edge->first;
+            if (from != chosen) { ++edge; continue; }
+            candidates.push_back(to);
+            heuristic_node_values[to] += edge->second;
+            edge = edges.erase(edge);
+        }
+        for (uint32_t candidate : candidates) {
+            const bool has_incoming = std::any_of(edges.begin(), edges.end(),
+                [&](const auto& edge) { return std::get<1>(edge.first) == candidate; });
+            if (!has_incoming) possible_start_nodes.push_back(candidate);
         }
     }
-
-    apply_topological_sort(
-        possible_start_nodes,
-        node_affection_to_start,
-        heuristic_node_values,
-        edges,
-        total_order,
-        confidence
-    );
 }
 
 vector<uint32_t> solve_constraints_with_topological_sort(
@@ -725,7 +646,7 @@ vector<uint32_t> solve_constraints_with_topological_sort(
         confidence
     );
 
-    confidence /= total_order.size();
+    if (!total_order.empty()) confidence /= total_order.size();
 
     return total_order;
 }
@@ -749,8 +670,8 @@ vector<uint32_t> order_cycles(
     }
     const int constraint_count_before = constraints.size();
     resolve_cycles_greedy(constraints, heuristic_node_values);
-    confidence_cycle_resolution = static_cast<float>(constraints.size())
-        / static_cast<float>(constraint_count_before);
+    confidence_cycle_resolution = constraint_count_before == 0 ? 0.0f :
+        static_cast<float>(constraints.size()) / static_cast<float>(constraint_count_before);
 
     std::cout << "      ▸ " << constraints.size();
     std::cout << " constraints remain after resolving cycles (confidence = ";

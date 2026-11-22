@@ -2,18 +2,15 @@
 #include <fstream>
 #include <deque>
 #include <cstdio> // for std::remove
-#include <parallel_hashmap/phmap.h>
 #include <functional>
 #include <set>
 #include <algorithm>
 #include <limits>
-#include <cassert>
-#include <mutex>
+#include <stdexcept>
 
-// ---------- tiny helpers (do not change logic) ----------
+// Decode sentinel and ambiguous graph bases without indexing outside the alphabet.
 namespace {
 inline char safe_base_from_code(uint8_t code) {
-    // Original logic used "ACGT"[code-1]; out-of-range now maps to 'N'
     static const char map[] = "NACGT"; // index 0..4
     if (code <= 4) return map[code];
     return 'N';
@@ -32,32 +29,16 @@ PhageCurator::PhageCurator(
     SDBG& sdbg,
     const std::map<uint64_t, std::map<uint64_t, std::vector<std::vector<uint64_t>>>>& grouped_paths,
     const std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>>& cycles)
-    : sdbg(sdbg), grouped_paths(grouped_paths), cycles(cycles) {
+    : sdbg(sdbg), grouped_paths(grouped_paths) {
 
     const bool validation = RevalidateAllNodesButSingleton();
     if (validation) {
         std::cout << "Graph nodes have successfully been revalidated." << std::endl;
     }
 
-    float sum_mult = 0.0f;
-    for (const auto& [id, cycle] : cycles) {
-        for (const auto& path : cycle) {
-            for (uint64_t node : path) {
-                cycle_nodes.insert(node);
-            }
-        }
-        // Compute avg_spacers for this cycle (preserve original accumulation semantics)
-        phmap::flat_hash_set<uint64_t> least_frequent_node_multiplicities;
-        for (const auto& path : cycle) {
-            for (uint64_t node : path) {
-                least_frequent_node_multiplicities.insert(node);
-            }
-        }
-        for (uint64_t node : least_frequent_node_multiplicities) {
-            sum_mult += sdbg.EdgeMultiplicity(node);
-        }
-        const size_t denom = least_frequent_node_multiplicities.size();
-        avg_spacers[id] = denom ? (sum_mult / static_cast<float>(denom)) : 0.0f;
+    for (const auto& [id, group_cycles] : cycles) {
+        for (const auto& path : group_cycles)
+            cycle_nodes.insert(path.begin(), path.end());
     }
 }
 
@@ -71,6 +52,7 @@ std::string PhageCurator::_ReconstructPath(const std::vector<uint64_t>& path) {
 }
 
 std::string PhageCurator::_FetchFirstNode(size_t node) {
+    if (node >= sdbg.size()) throw std::out_of_range("Path node is outside the graph");
     std::string label;
     const size_t k = sdbg.k();
     if (k == 0) return label;
@@ -78,27 +60,22 @@ std::string PhageCurator::_FetchFirstNode(size_t node) {
     std::vector<uint8_t> seq(k, 0);
     sdbg.GetLabel(node, seq.data());
 
-    // Original wrote: for (int i = k-1; i >= 0; --i) label.append(1, "ACGT"[seq[i] - 1]);
-    // Keep the same order and reverse afterward, but with safe indexing.
-    for (size_t t = 0; t < k; ++t) {
-        const size_t i = k - 1 - t;
-        label.push_back(safe_base_from_code(seq[i]));
-    }
-    std::reverse(label.begin(), label.end());
+    for (const auto code : seq) label.push_back(safe_base_from_code(code));
     return label;
 }
 
 std::string PhageCurator::_FetchNodeLastBase(size_t node) {
+    if (node >= sdbg.size()) throw std::out_of_range("Path node is outside the graph");
     const size_t k = sdbg.k();
     if (k == 0) return std::string();
 
     std::vector<uint8_t> seq(k, 0);
     sdbg.GetLabel(node, seq.data());
-    char base = safe_base_from_code(seq[0]);
+    char base = safe_base_from_code(seq.back());
     return std::string(1, base);
 }
 
-void PhageCurator::ReconstructPaths(std::vector<std::vector<uint64_t>> paths) {
+void PhageCurator::ReconstructPaths(const std::vector<std::vector<uint64_t>>& paths) {
     reconstructed_sequences.clear();
     reconstructed_sequences.reserve(paths.size());
     for (const auto& path : paths) {
@@ -114,28 +91,23 @@ void PhageCurator::ReconstructPaths(std::vector<std::vector<uint64_t>> paths) {
 void PhageCurator::WriteSequencesToFasta(const std::string& filename) {
     std::ofstream out(filename);
     if (!out) {
-        std::cerr << "Error opening file: " << filename << std::endl;
-        return;
+        throw std::runtime_error("Cannot open FASTA output: " + filename);
     }
     int count = 1;
     for (const auto& seq : reconstructed_sequences) {
         out << ">sequence_" << count << "\n" << seq << "\n";
         ++count;
     }
+    out.close();
+    if (!out) throw std::runtime_error("Cannot write FASTA output: " + filename);
 }
 
 bool PhageCurator::RevalidateAllNodesButSingleton() {
-    // If SDBG is not thread-safe, uncontrolled parallel SetValidEdge can crash.
-    // Preserve parallel intent but guard calls with a critical section.
-    #pragma omp parallel for
+    // SetValidEdge updates packed bits. A serial pass avoids races and the
+    // overhead of taking a critical-section lock separately for every node.
     for (uint64_t node = 0; node < sdbg.size(); ++node) {
-        // We don’t rely on IsValidEdge() value to avoid TOCTTOU; SetValidEdge is assumed idempotent.
-        #pragma omp critical(phage_curator_set_valid_edge)
-        {
-            if (!sdbg.IsValidEdge(node)) {
-                sdbg.SetValidEdge(node);
-            }
-        }
+        if (sdbg.EdgeMultiplicity(node) > 1 && !sdbg.IsValidEdge(node))
+            sdbg.SetValidEdge(node);
     }
     return true;
 }
@@ -155,19 +127,13 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
         all_paths.reserve(static_cast<size_t>(std::max(0, beam_width)));
     }
 
-    // thread-local pools
-    static thread_local std::vector<std::vector<uint64_t>> path_pool;
-    static thread_local std::vector<double> score_pool;
-    static thread_local std::vector<uint64_t> current_pool;
+    if (lower < 0 || higher < lower || beam_width <= 0 || min_mult > max_mult)
+        throw std::invalid_argument("Invalid beam search depth, width or multiplicity bounds");
+    if (start >= sdbg.size() || !sdbg.IsValidEdge(start)) return all_paths;
 
-    path_pool.clear();
-    score_pool.clear();
-    current_pool.clear();
-
-    const size_t reserve_hint = (higher > 0) ? static_cast<size_t>(higher + 64) : 128;
-    if (path_pool.capacity() == 0) path_pool.reserve(reserve_hint);
-    if (score_pool.capacity() == 0) score_pool.reserve(reserve_hint);
-    if (current_pool.capacity() == 0) current_pool.reserve(reserve_hint);
+    // Expanding a branch appends paths while its siblings still read the
+    // parent. deque keeps that parent reference valid across appends.
+    std::deque<std::vector<uint64_t>> path_pool;
 
     auto comp = std::greater<std::pair<double, size_t>>();
     std::set<std::pair<double, size_t>, decltype(comp)> beam_set(comp);
@@ -181,9 +147,6 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
     }
 
     path_pool.emplace_back(std::vector<uint64_t>{start});
-    path_pool.back().reserve((higher > 0) ? static_cast<size_t>(higher + 1) : path_pool.back().capacity());
-    score_pool.push_back(initial_mult);
-    current_pool.push_back(start);
     beam_set.insert({initial_mult, unique_id++});
 
     while (!beam_set.empty()) {
@@ -193,9 +156,8 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
         const size_t id = it->second;
         beam_set.erase(it);
 
-        // Do NOT bind a reference to an element of a growing vector; use index each time.
         const std::vector<uint64_t>& path_ref = path_pool[id];
-        const uint64_t v = current_pool[id];
+        const uint64_t v = path_ref.back();
         const int current_depth = static_cast<int>(path_ref.size()) - 1;
 
         if (current_depth >= lower && current_depth <= higher) {
@@ -208,7 +170,7 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
             continue;
         }
 
-        if (sdbg.EdgeOutdegreeZero(v)) {
+        if (current_depth >= higher || sdbg.EdgeOutdegreeZero(v)) {
             continue;
         }
 
@@ -228,6 +190,7 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
 
         for (int i = 0; i < n_iter; ++i) {
             const uint64_t neighbor = neighbors[i];
+            if (!sdbg.IsValidEdge(neighbor)) continue;
 
             // Cycle check (on current path)
             if (std::find(path_ref.begin(), path_ref.end(), neighbor) != path_ref.end()) {
@@ -245,12 +208,12 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
                 continue;
             }
 
-            // Copy base path to avoid dangling references upon vector growth
+            // Each branch owns its extension of the stable parent path.
             std::vector<uint64_t> new_path = path_ref;
             new_path.push_back(neighbor);
 
-            double new_score = (score * std::max(0, current_depth) + mult) /
-                               static_cast<double>(std::max(1, current_depth + 1));
+            double new_score = (score * path_ref.size() + mult) /
+                               static_cast<double>(path_ref.size() + 1);
             uint64_t current = neighbor;
 
             // Extend along simple path (preserving original loop’s semantics)
@@ -259,7 +222,7 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
                 if (depth_limit) break;
 
                 const uint64_t next = sdbg.NextSimplePathEdge(current);
-                if (next == SDBG::kNullID) break;
+                if (next == SDBG::kNullID || !sdbg.IsValidEdge(next)) break;
 
                 // Cycle check
                 if (std::find(new_path.begin(), new_path.end(), next) != new_path.end()) {
@@ -277,15 +240,13 @@ std::vector<std::vector<uint64_t>> PhageCurator::BeamSearchPathsAvoiding(
 
                 new_path.push_back(next);
                 const int new_depth = static_cast<int>(new_path.size()) - 1;
-                new_score = (new_score * (new_depth - 1) + next_mult) / static_cast<double>(new_depth);
+                new_score = (new_score * new_depth + next_mult) / static_cast<double>(new_depth + 1);
                 current = next;
             }
 
-            // Append new entries atomically to the pools
+            // Store the candidate and retain only the best pending branches.
             const size_t new_id = unique_id++;
             path_pool.emplace_back(std::move(new_path));
-            current_pool.push_back(current);
-            score_pool.push_back(new_score);
 
             beam_set.insert({new_score, new_id});
 
@@ -306,8 +267,7 @@ std::map<std::string, std::vector<std::string>>
 PhageCurator::FindQualityPathsBeamSearchFromGroupedPaths(int min_length, int max_length, const std::string& filename, int beam_width) {
     std::ofstream out(filename, std::ios::app);  // Append mode to add to file
     if (!out) {
-        std::cerr << "Error opening file: " << filename << std::endl;
-        return {};
+        throw std::runtime_error("Cannot open FASTA output: " + filename);
     }
 
     std::map<std::string, std::vector<std::string>> consensus_map;
@@ -348,9 +308,8 @@ PhageCurator::FindQualityPathsBeamSearchFromGroupedPaths(int min_length, int max
 
                 if (extended_paths.empty()) continue;
 
-                // NOTE: keep original parameter order/types to avoid changing logic
                 std::vector<std::vector<uint64_t>> best_paths =
-                    GetTopPathsFromBeamPaths(extended_paths, /*max*/ static_cast<int>(min_mult), /*min*/ static_cast<int>(max_mult), /*top_n*/ 2);
+                    GetTopPathsFromBeamPaths(extended_paths, min_mult, max_mult, 2);
 
                 if (best_paths.empty()) continue;
 
@@ -362,10 +321,9 @@ PhageCurator::FindQualityPathsBeamSearchFromGroupedPaths(int min_length, int max
                         result_path += _FetchNodeLastBase(ext_path[i]);
                     }
 
-                    // Keep original output side-effect and counter behavior
                     out << ">quality_path_" << path_count << "\n" << result_path << "\n";
                     ++path_count;
-                    // quality_paths.push_back(result_path); // commented in original; keep as-is
+                    quality_paths.push_back(result_path);
                 }
             }
         }
@@ -379,6 +337,7 @@ PhageCurator::FindQualityPathsBeamSearchFromGroupedPaths(int min_length, int max
 
     std::cout << "\nSaved in " << filename << std::endl;
     out.close();
+    if (!out) throw std::runtime_error("Cannot write FASTA output: " + filename);
     return consensus_map;
 }
 
@@ -397,13 +356,14 @@ std::string PhageCurator::ComputeConsensusForCurrentGroup(std::vector<std::strin
 
 std::vector<std::vector<uint64_t>> PhageCurator::GetTopPathsFromBeamPaths(
     const std::vector<std::vector<uint64_t>>& beam_paths,
-    int max,
-    int min,
+    double min_mult,
+    double max_mult,
     size_t top_n) {
+
+    if (min_mult > max_mult) throw std::invalid_argument("Invalid multiplicity bounds");
 
     struct PathScore {
         std::vector<uint64_t> path;
-        double avg_mult;
         double delta;
     };
 
@@ -415,24 +375,25 @@ std::vector<std::vector<uint64_t>> PhageCurator::GetTopPathsFromBeamPaths(
 
         double total = 0.0;
         for (uint64_t node : path) {
+            if (node >= sdbg.size()) throw std::out_of_range("Path node is outside the graph");
             total += sdbg.EdgeMultiplicity(node);
         }
-        const double avg = (path.size() ? (total / static_cast<double>(path.size())) : 0.0);
+        const double avg = total / static_cast<double>(path.size());
 
         double delta = 0.0;
-        if (avg < static_cast<double>(min))
-            delta = static_cast<double>(min) - avg;
-        else if (avg > static_cast<double>(max))
-            delta = avg - static_cast<double>(max);
+        if (avg < min_mult)
+            delta = min_mult - avg;
+        else if (avg > max_mult)
+            delta = avg - max_mult;
         else
             delta = 0.0;
 
-        scored_paths.push_back({path, avg, delta});
+        scored_paths.push_back({path, delta});
     }
 
     std::sort(scored_paths.begin(), scored_paths.end(),
               [](const PathScore& a, const PathScore& b) {
-                  return a.delta < b.delta;
+                  return a.delta != b.delta ? a.delta < b.delta : a.path < b.path;
               });
 
     const size_t keep = std::min(top_n, scored_paths.size());

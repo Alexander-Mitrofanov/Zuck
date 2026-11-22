@@ -2,6 +2,7 @@
 #define PIPELINE_H
 
 #include "core/settings.h"
+#include "core/graph_artifacts.h"
 #include "sdbg/sdbg.h"
 #include "core/sdbg_build.h"
 #include "crispr_array/cycle_finder.h"
@@ -43,18 +44,28 @@ inline void step_post_process(Settings& settings) {
 inline void step_cleanup(const Settings& settings) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    if (!settings.retain_graph) {
-        fs::path graph_dir = fs::path(settings.output_folder) / "graph";
-        fs::remove_all(graph_dir, ec);
-        if (ec) std::cerr << "  Warning: could not remove graph folder: " << ec.message() << std::endl;
+    if (!settings.retain_graph && settings.graph_input.empty()) {
+        const fs::path graph_dir = settings.graph_folder;
+        // Custom graph folders can contain user files. Remove only artifacts
+        // belonging to this generated graph, and never recurse into directories.
+        for (const auto& entry : fs::directory_iterator(graph_dir)) {
+            const bool generated = Zuck::graph_artifact(entry.path().filename().string());
+            if (generated && !entry.is_directory()) {
+                fs::remove(entry.path(), ec);
+                if (ec) std::cerr << "  Warning: could not remove graph file: " << ec.message() << std::endl;
+            }
+        }
+        if (fs::is_empty(graph_dir)) fs::remove(graph_dir, ec);
     }
     if (!settings.retain_cycles) {
         fs::path cycles_file = fs::path(settings.output_folder) / "cycles.txt";
         fs::remove(cycles_file, ec);
-        fs::path cycles_dir = fs::path(settings.output_folder) / "cycles";
-        fs::remove_all(cycles_dir, ec);
+        if (ec) std::cerr << "  Warning: could not remove cycles file: " << ec.message() << std::endl;
+        const fs::path cycles_dir = settings.cycles_folder;
+        if (fs::is_directory(cycles_dir) && fs::is_empty(cycles_dir)) fs::remove(cycles_dir, ec);
+        if (ec) std::cerr << "  Warning: could not remove cycles folder: " << ec.message() << std::endl;
     }
-    std::cout << "  ▸ Graph " << (settings.retain_graph ? "retained" : "removed")
+    std::cout << "  ▸ Graph " << (settings.retain_graph || !settings.graph_input.empty() ? "retained" : "removed")
               << "; cycles " << (settings.retain_cycles ? "retained" : "removed") << std::endl;
 }
 

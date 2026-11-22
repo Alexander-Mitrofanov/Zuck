@@ -1,35 +1,20 @@
 #ifndef SDBG_BUILD_H
 #define SDBG_BUILD_H
-#include <climits>
-#include <filesystem>
-#include <sdbg/sdbg.h>
-#include "core/settings.h"
-#include <stdio.h>
-//omp include
-#include <omp.h>
-#include <iostream>
-#include <stdexcept>
+
 #include <string>
+#include "core/settings.h"
 
-#include "definitions.h"
-#include "sorting/kmer_counter.h"
-#include "sorting/read_to_sdbg.h"
-#include "sorting/seq_to_sdbg.h"
-#include "utils/options_description.h"
-#include "utils/utils.h"
-
+// Build MEGAHIT's read library and graph using Zuck's validated settings.
 class SDBGBuild {
 public:
-    SDBGBuild(Settings settings);
-    ~SDBGBuild();
+    explicit SDBGBuild(const Settings& settings);
+
 private:
-    std::ofstream lib_file;
-    std::string WriteLibFile();
-    void BuildLib();
-    void BuildSDBG();
-    bool BuildSDBGUtil(int argc, char **argv);
-    bool BuildLibUtil(int argc, char **argv);
-    Settings settings;
+    std::string WriteLibFile(const std::vector<std::string>& inputs) const;
+    void BuildLib() const;
+    void BuildSDBG() const;
+
+    const Settings& settings;
 };
 
 #endif

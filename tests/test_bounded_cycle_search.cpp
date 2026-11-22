@@ -15,14 +15,14 @@ static void Require(bool condition, const char* message) {
 }
 
 static bool Search(const Graph& graph, uint64_t start, uint64_t target,
-                   int limit, my_mcaat::BoundedCycleWorkspace<>& workspace) {
+                   int limit, Zuck::BoundedCycleWorkspace<>& workspace) {
     const std::vector<uint64_t> empty;
     auto neighbors = [&](uint64_t node) -> const std::vector<uint64_t>& {
         auto found = graph.find(node);
         return found == graph.end() ? empty : found->second;
     };
     int reached_depth = -1;
-    return my_mcaat::HasBoundedPath(start, target, limit, neighbors,
+    return Zuck::HasBoundedPath(start, target, limit, neighbors,
                                    workspace, reached_depth);
 }
 
@@ -45,7 +45,7 @@ static bool Oracle(const Graph& graph, uint64_t start, int limit) {
 }
 
 int main() {
-    my_mcaat::BoundedCycleWorkspace<> workspace;
+    Zuck::BoundedCycleWorkspace<> workspace;
     const Graph triangle{{0, {1}}, {1, {2}}, {2, {0}}};
     Require(Search(triangle, 0, 0, 3, workspace),
             "cycle exactly at maximum length must survive prefilter");

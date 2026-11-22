@@ -1,0 +1,13 @@
+.git
+build
+_build
+_deps
+CMakeFiles
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+.work
+dist
+scripts/export_standalone.sh
+**/__pycache__
+**/*.pyc

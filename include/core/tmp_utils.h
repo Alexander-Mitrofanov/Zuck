@@ -2,8 +2,8 @@
  * @file tmp_utils.h
  * @brief Temporary Helper functions
  * 
- * Here are all functions that still have to be integrated into the full codebase
- * but land here because of various reasons
+ * Helpers for the experimental spacer-ordering workflow. Production boundary
+ * inference lives in crispr_array/post_processing.h.
  */
 #ifndef INCLUDE_TMP_UTILS_H_
 #define INCLUDE_TMP_UTILS_H_
@@ -33,12 +33,9 @@ void trim_string(string& s);
 /**
  * @brief Get the fastq files from the settings.input_files string
  * 
- * It takes the settings.input_files and looks for a space. If some exists, it expects 2 files.
- * If not only one file is expected.
- * After Splitting it into 2 files, or just taking out the 1 file, they are trimmed and returned.
- * 
- * @param settings Which contains at least one file path, or two space separated
- * 
+ * Uses the parsed input path list, preserving paths containing spaces.
+ * Throws unless there are one or two input files.
+ *
  * @return pair<string, optional<string>> If 2 files were found
  * @return pair<settings.input_files, nullopt> If only 1 file was found
  */

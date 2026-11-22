@@ -1,134 +1,130 @@
 #include "crispr_array/cycle_finder.h"
 #include "crispr_array/bounded_cycle_search.h"
-#include "crispr_array/filters.h"
+#include "crispr_array/search_partitions.h"
 #include "core/settings.h"
+#include <algorithm>
+#include <array>
+#include <iostream>
 #include <stdexcept>
 #include <fstream>
+#include <filesystem>
+#include <chrono>
 #include <stack>
+#include <cmath>
+#include <malloc.h>
+#include <omp.h>
 
 // Parallel hashmap for better performance in DLS
 #include <parallel_hashmap/phmap.h>
 
-/**
- * @file cycle_finder.cpp
- * @brief Implementation of functions for cycle detection and analysis in a sequence graph.
- * - Checking if any incoming edge of a node is not equal to the node itself.
- * - Performing a background check on a neighbor node to determine if it meets certain criteria.
- * - Getting the outgoing edges of a node that pass the background check.
- * - Retrieving the incoming edges of a node that pass the background check.
- * - Finding cycles in the graph.
- * - Performing a depth-limited search to determine if a path exists between two nodes within a certain depth.
- * - Collecting tips (nodes with no outgoing edges) in the graph.
- * - Performing recursive reduction to invalidate edges.
- * - Invalidating nodes with edge multiplicity of one.
- * - Chunking start nodes based on their multiplicity for parallel processing.
- * - Finding all cycles in the graph by iterating over chunked start nodes and utilizing parallel processing.
- */
+using namespace std;
 
+namespace {
+void apply_adaptive_coverage(Settings& settings) {
+    // Real SDBG edges describe k+1 bases. Exclude sentinel edges at both ends.
+    const auto& graph = *settings.sdbg;
+    std::array<uint64_t, 256> histogram{};
+    uint64_t real_edges = 0;
+    for (uint64_t edge = 0; edge < graph.size(); ++edge) {
+        if (!graph.IsValidEdge(edge) || graph.IsTip(edge)) continue;
+        const unsigned multiplicity = graph.EdgeMultiplicity(edge);
+        if (multiplicity == 0) continue;
+        ++histogram[std::min(multiplicity, 255u)];
+        ++real_edges;
+    }
 
-/**
- * @brief Checks if any incoming edge of a node is not equal to the node itself.
- */
-bool CycleFinder::_IncomingNotEqualToCurrentNode(uint64_t node, size_t edge_indegree) {
-    uint64_t incomings[edge_indegree];
-    this->settings.sdbg->IncomingEdges(node, incomings);
-    for (const auto& incoming : incomings)
-        if (node==incoming)
-            return true;
-    return false;
+    auto& support = settings.coverage_support;
+    support.measured = true;
+    support.real_edges = real_edges;
+    support.repeated_edges = real_edges - histogram[1];
+    const auto quartile = [&](unsigned numerator) -> unsigned {
+        const uint64_t n = support.repeated_edges;
+        if (n == 0) return 0;
+        // Nearest rank ceil(n * numerator / 4), without multiplying a large n.
+        const uint64_t rank = (n / 4) * numerator + ((n % 4) * numerator + 3) / 4;
+        uint64_t cumulative = 0;
+        for (unsigned m = 2; m < histogram.size(); ++m) {
+            cumulative += histogram[m];
+            if (cumulative >= rank) return m;
+        }
+        throw std::logic_error("Repeated edge histogram has inconsistent total");
+    };
+    support.q25 = quartile(1);
+    support.q50 = quartile(2);
+    support.q75 = quartile(3);
+    support.low_support = support.repeated_edges >= 1000 && support.q75 <= 5;
+    auto& search = settings.cycle_finder_settings;
+    if (support.low_support) {
+        if (!search.threshold_explicit)
+            search.threshold_multiplicity = std::max(3u, 2 * support.q50);
+        if (!search.low_abundance_explicit)
+            search.low_abundance = true;
+    }
+    std::cout << "  ▸ Adaptive coverage: real edges=" << real_edges
+              << ", singletons=" << histogram[1] << ", repeated=" << support.repeated_edges
+              << ", repeated-edge Q25/Q50/Q75=" << support.q25 << '/' << support.q50 << '/' << support.q75
+              << ", low support=" << (support.low_support ? "yes" : "no")
+              << ", seed cutoff=" << search.threshold_multiplicity
+              << ", retain singletons=" << (search.low_abundance ? "yes" : "no") << '\n';
 }
-/**
- * @brief Performs a background check on a neighbor node to determine if it meets certain criteria.
- */
-bool CycleFinder::_BackgroundCheck(uint64_t original_node, size_t repeat_multiplicity, uint64_t neighbor_node) {
-    auto neighbor_node_multiplicity = this->settings.sdbg->EdgeMultiplicity(neighbor_node);
-    // Use lock-free visited test (atomic bitset) to avoid contention
-    size_t idx = neighbor_node >> 6;
-    uint64_t mask = 1ULL << (neighbor_node & 63);
-    int tid = omp_get_thread_num();
-    if ((per_thread_visited[tid][idx] & mask) != 0) {
+} // namespace
+
+bool CycleFinder::_HasSelfLoop(uint64_t node) {
+    uint64_t incoming[MAX_EDGE_COUNT];
+    const int count = settings.sdbg->IncomingEdges(node, incoming);
+    return count > 0 && std::find(incoming, incoming + count, node) != incoming + count;
+}
+
+// Visited history is local to this search partition. Reject zero-multiplicity
+// edges before division: imported graphs can still contain such edges.
+bool CycleFinder::_BackgroundCheck(uint64_t original_node,
+                                   size_t repeat_multiplicity, uint64_t neighbor) {
+    if (original_node == neighbor || !settings.sdbg->IsValidEdge(neighbor))
         return false;
-    }
-    if (repeat_multiplicity / neighbor_node_multiplicity > 500) {
+    const auto multiplicity = settings.sdbg->EdgeMultiplicity(neighbor);
+    if (multiplicity == 0 || repeat_multiplicity / multiplicity > 500)
         return false;
-    }
-    if (original_node == neighbor_node) {
-        return false;
-    }
-    return true; 
+    const size_t word = neighbor >> 6;
+    const uint64_t mask = uint64_t{1} << (neighbor & 63);
+    return (per_thread_visited[omp_get_thread_num()][word] & mask) == 0;
 }
 
+void CycleFinder::_GetOutgoings(uint64_t node, SmallNodeSet& neighbors,
+                                size_t repeat_multiplicity) {
+    if (!settings.sdbg->IsValidEdge(node)) return;
+    uint64_t outgoing[MAX_EDGE_COUNT];
+    const int count = settings.sdbg->OutgoingEdges(node, outgoing);
+    for (int i = 0; i < count; ++i)
+        if (_BackgroundCheck(node, repeat_multiplicity, outgoing[i]))
+            neighbors.insert(outgoing[i]);
+}
 
-/**
- * @brief Gets the outgoing edges of a node that pass the background check.
- */
-void CycleFinder::_GetOutgoings(uint64_t node, SmallNodeSet& outgoings_set, size_t repeat_multiplicity) {
-   
-    int edge_outdegree = this->settings.sdbg->EdgeOutdegree(node);
-    if (edge_outdegree == 0 || !this->settings.sdbg->IsValidEdge(node)) {
-        return;
-    }
-     uint64_t outgoings[edge_outdegree];
-    int flag = this->settings.sdbg->OutgoingEdges(node, outgoings);
-    if(flag!=-1)    
-        for (const auto& outgoing : outgoings)
-            if (this->_BackgroundCheck(node, repeat_multiplicity, outgoing) && this->settings.sdbg->IsValidEdge(outgoing))
-                outgoings_set.insert(outgoing);
-    
-    
+void CycleFinder::_GetIncomings(uint64_t node, SmallNodeSet& neighbors,
+                                size_t repeat_multiplicity) {
+    if (!settings.sdbg->IsValidEdge(node)) return;
+    uint64_t incoming[MAX_EDGE_COUNT];
+    const int count = settings.sdbg->IncomingEdges(node, incoming);
+    for (int i = 0; i < count; ++i)
+        if (_BackgroundCheck(node, repeat_multiplicity, incoming[i]))
+            neighbors.insert(incoming[i]);
 }
-/**
- * @brief Retrieves the incoming edges of a node that pass the background check.
- */
-void CycleFinder::_GetIncomings(uint64_t node, SmallNodeSet& incomings_set, size_t repeat_multiplicity) {
-  
-    int edge_indegree = this->settings.sdbg->EdgeIndegree(node);
-    if (edge_indegree == 0 || !this->settings.sdbg->IsValidEdge(node)) {
-        return;
-    }
-    uint64_t incomings[edge_indegree];
-    int flag = this->settings.sdbg->IncomingEdges(node, incomings);
-    if (flag!=-1)
-        for (const auto& incoming : incomings)
-            if (this->_BackgroundCheck(node, repeat_multiplicity, incoming) && this->settings.sdbg->IsValidEdge(incoming))
-                incomings_set.insert(incoming);
+
+// Reachability checks deliberately ignore multiplicity and visited history.
+void CycleFinder::_GetOutgoings(uint64_t node, SmallNodeSet& neighbors) {
+    if (!settings.sdbg->IsValidEdge(node)) return;
+    uint64_t outgoing[MAX_EDGE_COUNT];
+    const int count = settings.sdbg->OutgoingEdges(node, outgoing);
+    for (int i = 0; i < count; ++i)
+        if (settings.sdbg->IsValidEdge(outgoing[i])) neighbors.insert(outgoing[i]);
 }
-// ## START: HELPER FUNCTIONS FOR DLS ##
-/**
- * @brief Gets the outgoing edges of a node that pass the background check.
- */
-void CycleFinder::_GetOutgoings(uint64_t node, SmallNodeSet& outgoings_set) {
-   
-    int edge_outdegree = this->settings.sdbg->EdgeOutdegree(node);
-    if (edge_outdegree == 0 || !this->settings.sdbg->IsValidEdge(node)) {
-        return;
-    }
-    uint64_t outgoings[edge_outdegree];
-    int flag = this->settings.sdbg->OutgoingEdges(node, outgoings);
-    if(flag!=-1)
-        for (const auto& outgoing : outgoings)
-            if (this->settings.sdbg->IsValidEdge(outgoing))
-                outgoings_set.insert(outgoing);
-    
-    
+
+void CycleFinder::_GetIncomings(uint64_t node, SmallNodeSet& neighbors) {
+    if (!settings.sdbg->IsValidEdge(node)) return;
+    uint64_t incoming[MAX_EDGE_COUNT];
+    const int count = settings.sdbg->IncomingEdges(node, incoming);
+    for (int i = 0; i < count; ++i)
+        if (settings.sdbg->IsValidEdge(incoming[i])) neighbors.insert(incoming[i]);
 }
-/**
- * @brief Retrieves the incoming edges of a node that pass the background check.
- */
-void CycleFinder::_GetIncomings(uint64_t node, SmallNodeSet& incomings_set) {
-  
-    int edge_indegree = this->settings.sdbg->EdgeIndegree(node);
-    if (edge_indegree == 0 || !this->settings.sdbg->IsValidEdge(node)) {
-        return;
-    }
-    uint64_t incomings[edge_indegree];
-    int flag = this->settings.sdbg->IncomingEdges(node, incomings);
-    if (flag!=-1)
-        for (const auto& incoming : incomings)
-            if (this->settings.sdbg->IsValidEdge(incoming))
-                incomings_set.insert(incoming);
-}
-// ## END: HELPER FUNCTIONS FOR DLS ##
 
 /**
  * @brief Finds the cycles in the graph using settings configuration.
@@ -136,11 +132,12 @@ void CycleFinder::_GetIncomings(uint64_t node, SmallNodeSet& incomings_set) {
  * @param settings The application Settings containing SDBG pointer and cycle finder configuration.
  */
 CycleFinder::CycleFinder(Settings& settings)
-    : settings(settings), cluster_bounds(500) {
+    : settings(settings) {
     // Ensure settings.sdbg is valid; this should be set by caller before constructing CycleFinder
     if (this->settings.sdbg == nullptr) {
         throw std::runtime_error("CycleFinder requires settings.sdbg to be set to a valid SDBG instance");
     }
+    if (settings.adaptive_coverage) apply_adaptive_coverage(settings);
     this->FindApproximateCRISPRArrays();
 }
 
@@ -232,7 +229,7 @@ vector<vector<uint64_t>> CycleFinder::FindCycle(uint64_t start_node, vector<uint
     
     if (cycles.empty()) return {};
 
-    // Mark visited nodes atomically (no global critical section)
+    // Mark visited nodes within this logical search partition only.
     for (const auto& cycle : cycles)
         for (const auto& node : cycle) {
             size_t idx = node >> 6;
@@ -267,14 +264,14 @@ vector<vector<uint64_t>> CycleFinder::FindCycleUtil(uint64_t start_node) {
  * at the configured maximum cycle length.
  */
 bool CycleFinder::DepthLevelSearch(uint64_t start, uint64_t target, int limit, int& reached_depth) {
-    static thread_local my_mcaat::BoundedCycleWorkspace<
+    static thread_local Zuck::BoundedCycleWorkspace<
         phmap::flat_hash_set<uint64_t>> workspace;
     auto neighbors = [this](uint64_t node) {
         SmallNodeSet outgoings;
         this->_GetOutgoings(node, outgoings);
         return outgoings;
     };
-    return my_mcaat::HasBoundedPath(start, target, limit, neighbors,
+    return Zuck::HasBoundedPath(start, target, limit, neighbors,
                                    workspace, reached_depth);
 }
 
@@ -341,9 +338,6 @@ void CycleFinder::InvalidateMultiplicityOneNodes() {
  */
 size_t CycleFinder::ChunkStartNodes(map<int, vector<uint64_t>, greater<int>>& start_nodes_chunked) {
     const int chunk_size = 20000;
-    if(!this->settings.cycle_finder_settings.low_abundance){
-        this->InvalidateMultiplicityOneNodes();
-    }
     size_t n = this->settings.sdbg->size();
     int threads = static_cast<int>(this->settings.threads);
 
@@ -362,7 +356,7 @@ size_t CycleFinder::ChunkStartNodes(map<int, vector<uint64_t>, greater<int>>& st
             if (my_loaded % 1000000 == 0) std::cout << "  ▸ Scanning: " << (my_loaded / 1000000) << "M nodes..." << std::endl;
             if (edge_indegree >= 2 && this->settings.sdbg->EdgeMultiplicity(node) > this->settings.cycle_finder_settings.threshold_multiplicity)
             {
-                if(this->_IncomingNotEqualToCurrentNode(node, edge_indegree)) continue;
+                if(this->_HasSelfLoop(node)) continue;
                 int reached_depth = 0;
 
                 bool dls = this->DepthLevelSearch(node, node, this->settings.cycle_finder_settings.cycle_max_length, reached_depth);
@@ -382,12 +376,10 @@ size_t CycleFinder::ChunkStartNodes(map<int, vector<uint64_t>, greater<int>>& st
     }
 
     // Dynamic scanning assigns chunks to workers in an unpredictable order.
-    // Sort before the static traversal partition so a fixed thread count has
-    // a reproducible start order and visited-state history.
+    // Logical partitions use this order independently of worker assignment.
     for (auto& bucket : start_nodes_chunked) {
         std::sort(bucket.second.begin(), bucket.second.end());
     }
-   //writeStartNodesToFile(start_nodes_chunked, "start_nodes.txt");
     size_t sum_of_all_quantities_in_all_chunks = 0;
     for (const auto& [key, value] : start_nodes_chunked) {
         std::cout << "  ▸ Bucket mult\u00d7" << (1 << key) << " (log2=" << key << "): " << value.size() << " nodes" << std::endl;
@@ -400,17 +392,17 @@ size_t CycleFinder::ChunkStartNodes(map<int, vector<uint64_t>, greater<int>>& st
 /**
  * @brief Finds all cycles in the graph by iterating over chunked start nodes and utilizing parallel processing.
  */
-int CycleFinder::FindApproximateCRISPRArrays()
- {
+size_t CycleFinder::FindApproximateCRISPRArrays() {
     
     vector<uint64_t> tips = this->CollectTips();
     std::cout << "  ▸ Graph: " << this->settings.sdbg->size() << " nodes, tips: " << tips.size() << std::endl;
     
-    this->InvalidateMultiplicityOneNodes();
+    if (!this->settings.cycle_finder_settings.low_abundance)
+        this->InvalidateMultiplicityOneNodes();
     for ( uint64_t tip : tips) {
         this->RecursiveReduction(tip);
     }
-    int valid_edges = 0;
+    uint64_t valid_edges = 0;
     #pragma omp parallel for reduction(+:valid_edges)
     for (uint64_t node = 0; node < this->settings.sdbg->size(); node++) {
         if (this->settings.sdbg->IsValidEdge(node)) {
@@ -420,53 +412,45 @@ int CycleFinder::FindApproximateCRISPRArrays()
 
     tips = this->CollectTips();
     std::cout << "  ▸ After tip pruning: " << valid_edges << " valid edges, " << tips.size() << " tips remain" << std::endl;
-    // struct mallinfo mem_info = mallinfo(); // deprecated
-    // size_t graph_mem_info = mem_info.uordblks; // unused
-    int cumulative = 0;
+    std::size_t cumulative = 0;
     std::cout << "  ▸ Params: max-len=" << this->settings.cycle_finder_settings.cycle_max_length
               << "  min-len=" << this->settings.cycle_finder_settings.cycle_min_length
+              << "  partitions=" << this->settings.cycle_finder_settings.traversal_partitions
               << "  threads=" << this->settings.threads << std::endl;
-        std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>> all_cycles;
 
     map<int, vector<uint64_t>, greater<int>> start_nodes_chunked;
     size_t start_nodes_amount=this->ChunkStartNodes(start_nodes_chunked);
     std::cout << "  ▸ Start nodes: " << start_nodes_amount << std::endl;
-    size_t counter = 0;
-    int max_threads = static_cast<int>(this->settings.threads);
+    int max_threads = std::min(static_cast<int>(this->settings.threads),
+                              this->settings.cycle_finder_settings.traversal_partitions);
     size_t words = (this->settings.sdbg->size() + 63) / 64;
     per_thread_visited.resize(max_threads);
     for (auto &v : per_thread_visited) {
         v.resize(words, 0);
     }
     for (auto nodes_iterator = start_nodes_chunked.begin(); nodes_iterator != start_nodes_chunked.end(); nodes_iterator++) {
-        // Reset visited bitmaps so nodes from a higher-multiplicity bucket don't
-        // block traversal in lower-multiplicity buckets.
-        for (auto &v : per_thread_visited)
-            std::fill(v.begin(), v.end(), 0);
         size_t cumulative_at_bucket_start = cumulative;
-        auto thread_count = static_cast<int>(this->settings.threads);
-        if (static_cast<int>(nodes_iterator->second.size()) < thread_count)
-            thread_count = nodes_iterator->second.size();
+        auto thread_count = max_threads;
+        thread_count = static_cast<int>(std::min(nodes_iterator->second.size(),
+                                                 static_cast<size_t>(thread_count)));
 
         // Per-thread results to avoid concurrent modification of shared unordered_map
         vector<unordered_map<uint64_t, vector<vector<uint64_t>>>> local_results(thread_count);
         vector<size_t> local_cycle_counts(thread_count, 0);
-        vector<size_t> local_processed(thread_count, 0);
 
-        #pragma omp parallel num_threads(thread_count)
-        {
-            int tid = omp_get_thread_num();
-            #pragma omp for schedule(static)
-            for (uint64_t start_node_index = 0; start_node_index < nodes_iterator->second.size(); start_node_index++) {
+        Zuck::visit_search_partitions(nodes_iterator->second.size(),
+            this->settings.cycle_finder_settings.traversal_partitions, thread_count,
+            [&](int tid) {
+                std::fill(per_thread_visited[tid].begin(), per_thread_visited[tid].end(), 0);
+            },
+            [&](std::size_t start_node_index, int tid) {
                 uint64_t start_node = nodes_iterator->second[start_node_index];
                 vector<vector<uint64_t>> cycles = this->FindCycleUtil(start_node);
                 local_cycle_counts[tid] += cycles.size();
-                local_processed[tid] += 1;
                 if (!cycles.empty()) {
                     local_results[tid][start_node] = std::move(cycles);
                 }
-            }
-        }
+            });
 
         // Merge local results into shared structures (serial merge)
         for (int t = 0; t < thread_count; ++t) {
@@ -474,7 +458,6 @@ int CycleFinder::FindApproximateCRISPRArrays()
                 this->results[entry.first] = std::move(entry.second);
             }
             cumulative += local_cycle_counts[t];
-            counter += local_processed[t];
         }
 
         malloc_trim(0);
@@ -504,10 +487,37 @@ void CycleFinder::writeMapToFile(
     const std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>>& cycles,
     const std::string& filename)
 {
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        throw std::runtime_error("Cannot write cycles to: " + filename);
+    namespace fs = std::filesystem;
+    const fs::path destination(filename);
+    const auto check_destination = [&]() {
+        const auto status = fs::symlink_status(destination);
+        if (fs::is_symlink(status) || (fs::exists(status) && !fs::is_regular_file(status)))
+            throw std::runtime_error("Cannot write cycles to: " + filename);
+    };
+    check_destination();
+
+    // A unique sibling directory owns the temporary file. Closing and renaming
+    // only after all serialization succeeds preserves previous cycle evidence
+    // on write errors and never follows a destination symlink or hard link.
+    struct StagingDirectory {
+        fs::path path;
+        ~StagingDirectory() {
+            if (path.empty()) return;
+            std::error_code ignored;
+            fs::remove_all(path, ignored);
+        }
+    } staging;
+    const auto parent = destination.has_parent_path() ? destination.parent_path() : fs::path(".");
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (unsigned int attempt = 0; attempt < 100; ++attempt) {
+        const auto candidate = parent / (".Zuck-cycles-" + std::to_string(nonce) + "-" + std::to_string(attempt));
+        if (fs::create_directory(candidate)) { staging.path = candidate; break; }
     }
+    if (staging.path.empty())
+        throw std::runtime_error("Cannot write cycles staging directory: " + filename);
+    const auto temporary = staging.path / "cycles.txt";
+    std::ofstream out(temporary);
+    if (!out.is_open()) throw std::runtime_error("Cannot write cycles to: " + filename);
     // Lossless compact representation: the first k-mer followed by the one
     // new base contributed by each later graph edge. Keep it headerless so a
     // v1.0.0 parser, which already accepts one-token glued records, can replay
@@ -587,10 +597,10 @@ void CycleFinder::writeMapToFile(
     out.close();
     if (!out)
         throw std::runtime_error("Error closing cycles file: " + filename);
+    check_destination();
+    fs::rename(temporary, destination);
     if (legacy_fallback_records != 0)
         std::cout << "  ▸ Compact-overlap fallbacks: "
                   << legacy_fallback_records << std::endl;
     std::cout << "  ▸ Cycles saved: " << filename << std::endl;
 }
-
-CycleFinder::~CycleFinder() {}

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 INSTALL=false
 CLEAN=false
@@ -12,11 +12,13 @@ for arg in "$@"; do
     case $arg in
         --install)
             INSTALL=true
-            shift
+            ;;
+        -h|--help)
+            echo "Usage: ./install.sh [--install] [--clean]"
+            exit 0
             ;;
         --clean)
             CLEAN=true
-            shift
             ;;
         *)
             echo "Unknown option: $arg"
@@ -54,10 +56,10 @@ cmake -S "${SOURCE_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
 echo "Building..."
 cmake --build "${BUILD_DIR}" -j"$(nproc)"
 
-echo "Build complete. Binary: ${BUILD_DIR}/my_mcaat"
+echo "Build complete. Binary: ${BUILD_DIR}/Zuck"
 
 if $INSTALL; then
     echo "Installing binary to /usr/local/bin..."
-    sudo cp "${BUILD_DIR}/my_mcaat" /usr/local/bin/
-    echo "Installed. Run 'my_mcaat' from anywhere."
+    sudo cp "${BUILD_DIR}/Zuck" /usr/local/bin/
+    echo "Installed. Run 'Zuck' from anywhere."
 fi

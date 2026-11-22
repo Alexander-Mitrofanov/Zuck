@@ -1,25 +1,18 @@
 #ifndef CYCLE_FINDER_H
 #define CYCLE_FINDER_H
-#include <sdbg/sdbg.h>
-#include <vector>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <map>
-#include <set>
+#include <string>
 #include <unordered_map>
-#include <array>
-#include <stack>
-#include <omp.h>
-#include "core/settings.h"
-#include <unordered_set>
-//#include "progressbar.hpp"
-#include <list>
-#include <malloc.h>
-#include <bitset>
-#include <atomic> 
-// Parallel hashmap for better performance in DLS
+#include <vector>
 #include <parallel_hashmap/phmap.h>
+#include "core/settings.h"
 
-using namespace std;
-
+// DNA graph vertices have at most four neighbors. Erasure swaps in the last
+// element, preserving the historical traversal order without heap allocation.
 struct SmallNodeSet {
     uint64_t nodes[4];
     uint8_t  count = 0;
@@ -35,69 +28,47 @@ struct SmallNodeSet {
     const uint64_t* end()   const { return nodes + count; }
 };
 
+// Enumerates bounded graph cycles. Construction runs the configured search;
+// results retain graph-edge paths and cycles.txt stores their DNA sequences.
 class CycleFinder {
-    private:
-        // Use Settings to configure CycleFinder globally
-        Settings& settings;
-        static constexpr size_t MAX_EDGE_COUNT = 4;
-        // Use SDBG pointer from settings everywhere instead of storing a separate reference
-        //SDBG& sdbg;
-        uint16_t cluster_bounds;
-        // visited bitset stored as 64-bit words (1 bit per node). Use atomic builtins on the words to avoid non-copyable std::atomic in vectors.
-        vector<vector<uint64_t>> per_thread_visited;
-        vector<bool> look_up_table;
-        std::atomic<uint64_t> saturated_start_nodes{0};
-        std::atomic<uint64_t> step_limited_start_nodes{0};
+private:
+    Settings& settings;
+    static constexpr std::size_t MAX_EDGE_COUNT = 4;
+    std::uint16_t cluster_bounds = 500;
+    // One scratch bitmap per worker, reset for each logical search partition.
+    std::vector<std::vector<std::uint64_t>> per_thread_visited;
+    std::atomic<std::uint64_t> saturated_start_nodes{0};
+    std::atomic<std::uint64_t> step_limited_start_nodes{0};
 
-        // thread count obtained from settings
+    bool _HasSelfLoop(std::uint64_t node);
+    bool _BackgroundCheck(std::uint64_t original_node,
+                          std::size_t repeat_multiplicity, std::uint64_t neighbor);
+    void _GetOutgoings(std::uint64_t node, SmallNodeSet& neighbors,
+                       std::size_t repeat_multiplicity);
+    void _GetIncomings(std::uint64_t node, SmallNodeSet& neighbors,
+                       std::size_t repeat_multiplicity);
+    void _GetOutgoings(std::uint64_t node, SmallNodeSet& neighbors);
+    void _GetIncomings(std::uint64_t node, SmallNodeSet& neighbors);
 
-        //#### DEVELOPER FUNCTIONS ####
-        void _WriteStartNodesToFile(const map<int, vector<uint64_t>, greater<int>>& start_nodes_chunked, const std::string& filename);
-        void _ReadStartNodesFromFile(map<int, vector<uint64_t>, greater<int>>& start_nodes_chunked, const std::string& filename);
-        void _WriteMapToFile(const std::unordered_map<uint64_t,  std::vector<std::vector<uint64_t>>>& cycles, const std::string& filename);
-        //### DEVELOPER FUNCTIONS ####
-        
-        //#### HELPER FUNCTIONS FOR CYCLE ENUMERATION ####
-        bool _IncomingNotEqualToCurrentNode(uint64_t node, size_t edge_indegree);
-        bool _BackgroundCheck(uint64_t original_node, size_t repeat_multiplicity, uint64_t current_node);
-        void _GetOutgoings(uint64_t node, SmallNodeSet& outgoings_set, size_t repeat_multiplicity);
-        void _GetIncomings(uint64_t node, SmallNodeSet& incomings_set, size_t repeat_multiplicity);
-        //#### HELPER FUNCTIONS FOR CYCLE ENUMERATION ####
+public:
+    explicit CycleFinder(Settings& settings);
+    std::unordered_map<std::uint64_t, std::vector<std::vector<std::uint64_t>>> results;
 
-
-        //#### HELPER FUNCTIONS FOR DLS ###
-        void _GetOutgoings(uint64_t node, SmallNodeSet& outgoings_set);
-        void _GetIncomings(uint64_t node, SmallNodeSet& incomings_set);
-        //#### HELPER FUNCTIONS FOR DLS ####
-
-    public:
-        // genome/cycles folder available via settings
-        CycleFinder(Settings& settings);
-        //write a getter for results
-        unordered_map<uint64_t, vector<vector<uint64_t>>> results;
-
-        // #### RECURSIVE REDUCTION ####
-        vector<uint64_t> CollectTips();
-        void RecursiveReduction(uint64_t tip);
-        void InvalidateMultiplicityOneNodes();  
-        int MultiCycleDepthLevelSearch(uint64_t start, uint64_t target, int limit, int min_cycles);
-        void writeMapToFile(const std::unordered_map<uint64_t,  std::vector<std::vector<uint64_t>>>& cycles, const std::string& filename);
-        //#### DLS ####
-        size_t ChunkStartNodes(map<int, vector<uint64_t>, std::greater<int>>& start_nodes_chunked);
-        bool DepthLevelSearch(uint64_t start, uint64_t target, int limit, int& reached_depth) ;
-        //#### DLS ####
-        string CreateFolder();
-        //#### CYCLE ENUMERATION ####
-        vector<vector<uint64_t>> FindCycle(uint64_t start_node, vector<uint64_t>& path, phmap::flat_hash_map<uint64_t,int>& lock, vector<SmallNodeSet>& stack, vector<int>& backtrack_lengths);
-        vector<vector<uint64_t>> FindCycleUtil(uint64_t startnode);
-        //#### CYCLE ENUMERATION ####
-        void MarkCycleNodesUpTo100();
-        // 1. Call ChunkStartNodes to chunk the start nodes based on their multiplicity for parallel processing
-        // 1.1 ChunkStartNodes will call DepthLevelSearch to determine if there is a cycle in a certain depth
-        // 2. Call FindCycleUtil to find the cycles in the graph
-        // 3. Write cycle labels to output_folder/cycles.txt
-        // 4. Return the number of cycles found
-        int FindApproximateCRISPRArrays();
-        ~CycleFinder();
-};  
+    std::vector<std::uint64_t> CollectTips();
+    void RecursiveReduction(std::uint64_t tip);
+    void InvalidateMultiplicityOneNodes();
+    std::size_t ChunkStartNodes(
+        std::map<int, std::vector<std::uint64_t>, std::greater<int>>& buckets);
+    bool DepthLevelSearch(std::uint64_t start, std::uint64_t target,
+                          int limit, int& reached_depth);
+    std::vector<std::vector<std::uint64_t>> FindCycle(
+        std::uint64_t start, std::vector<std::uint64_t>& path,
+        phmap::flat_hash_map<std::uint64_t, int>& locks,
+        std::vector<SmallNodeSet>& stack, std::vector<int>& backtrack_lengths);
+    std::vector<std::vector<std::uint64_t>> FindCycleUtil(std::uint64_t start);
+    std::size_t FindApproximateCRISPRArrays();
+    void writeMapToFile(
+        const std::unordered_map<std::uint64_t, std::vector<std::vector<std::uint64_t>>>& cycles,
+        const std::string& filename);
+};
 #endif

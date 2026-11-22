@@ -49,6 +49,7 @@ void reverse_pair_ends_sequence(string& sequence);
  * @param sequence Used to get node id chain
  * 
  * @return {}, if sequence <= 2*K || start and end node_id are not in nodes_of_cycles
+ * @return {}, if any k-mer is ambiguous or absent from the graph
  * @return node id chain (vector<uint64_t>), else
  */
 vector<uint64_t> get_read_from_sequence(
@@ -68,7 +69,6 @@ vector<uint64_t> get_read_from_sequence(
  * @param fastq_file_1 Normal fastq read file
  * @param fastq_file_2 Optional second fastq file with reversed complement sequences
  * @param cycles 
- * @param biggest_jump_size 
  * 
  * @return Reads that start or end in the cycles (vector<uint64_t>)
  */
@@ -76,7 +76,7 @@ vector<vector<uint64_t>> get_reads(
     const SDBG& sdbg,
     const string& fastq_file_1,
     const optional<string>& fastq_file_2,
-    const vector<vector<uint64_t>> cycles
+    const vector<vector<uint64_t>>& cycles
 );
 
 #endif

@@ -5,7 +5,7 @@ vector<vector<uint64_t>> run_and_debug_finding_of_relevant_reads(
     const Settings& settings,
     const SDBG &sdbg
 ) {
-    chrono::_V2::system_clock::time_point start_time = chrono::high_resolution_clock::now();
+    const auto start_time = chrono::steady_clock::now();
     
     auto fastq_files = get_fastq_files_from_settings(settings);
     auto reads = get_reads(
@@ -20,7 +20,7 @@ vector<vector<uint64_t>> run_and_debug_finding_of_relevant_reads(
         return reads;
     }
 
-    chrono::_V2::system_clock::time_point end_time = chrono::high_resolution_clock::now();
+    const auto end_time = chrono::steady_clock::now();
     cout << "\n⏳ Time elapsed: ";
     cout << std::fixed << std::setprecision(2);
     cout << chrono::duration<double>(end_time - start_time).count();
@@ -34,14 +34,15 @@ vector<tuple<string, string, vector<string>, float, float>> run_and_debug_spacer
     SDBG& sdbg,
     const vector<vector<uint64_t>>& cycles
 ) {
-    chrono::_V2::system_clock::time_point start_time = chrono::high_resolution_clock::now();
+    const auto start_time = chrono::steady_clock::now();
     
     cout << "  ▸ Splitting into subproblems" << endl;
     if (reads.empty()) {
         cout << "  ▸ No reads found, skipping spacer ordering" << endl;
         return {};
     }
-    const size_t reads_size = reads[0].size();
+    const size_t reads_size = std::max_element(reads.begin(), reads.end(),
+        [](const auto& left, const auto& right) { return left.size() < right.size(); })->size();
     auto subgraphs = get_crispr_regions_extended_by_k(sdbg, reads_size, cycles);
 
     cout << "  🔄 Filtering subproblems:" << endl;
@@ -134,7 +135,7 @@ vector<tuple<string, string, vector<string>, float, float>> run_and_debug_spacer
     }
     cout << "  ✅ Completed each subproblem" << endl;
 
-    chrono::_V2::system_clock::time_point end_time = chrono::high_resolution_clock::now();
+    const auto end_time = chrono::steady_clock::now();
     cout << "\n⏳ Time elapsed: ";
     cout << std::fixed << std::setprecision(2);
     cout << chrono::duration<double>(end_time - start_time).count();
@@ -147,7 +148,7 @@ void run_and_debug_benchmark_results(
     const Settings& settings,
     const vector<tuple<string, string, vector<string>, float, float>>& found_systems
 ) {
-    chrono::_V2::system_clock::time_point start_time = chrono::high_resolution_clock::now();
+    const auto start_time = chrono::steady_clock::now();
 
     vector<string> benchmark_sequences;
     ifstream benchmark_in(settings.benchmark_file);
@@ -200,7 +201,12 @@ void run_and_debug_benchmark_results(
         cout << sequence << endl;
         average_sequence_similarity += sequence_similarity;
     }
-    average_sequence_similarity /= static_cast<float>(found_systems.size() - no_match_count);
+    const auto matched_count = found_systems.size() - no_match_count;
+    if (matched_count == 0) {
+        cout << "  ▸ No matched benchmark sequences; average similarity is unavailable" << endl;
+        return;
+    }
+    average_sequence_similarity /= static_cast<float>(matched_count);
 
     cout << "  ▸ The average sequence similarity is ";
     cout << std::fixed << std::setprecision(2);
@@ -208,7 +214,7 @@ void run_and_debug_benchmark_results(
     cout << "% with " << no_match_count << "/" << found_systems.size();
     cout << " ignored" << endl;
 
-    chrono::_V2::system_clock::time_point end_time = chrono::high_resolution_clock::now();
+    const auto end_time = chrono::steady_clock::now();
     cout << "\n⏳ Time elapsed: ";
     cout << std::fixed << std::setprecision(2);
     cout << chrono::duration<double>(end_time - start_time).count();

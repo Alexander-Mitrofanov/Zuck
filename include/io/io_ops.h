@@ -7,13 +7,13 @@
 #include <cstdint>
 #include <sdbg/sdbg.h>
 
-#ifdef DEVELOP
+#ifdef DEBUG
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 #endif
 
 struct io_ops {
-#ifdef DEVELOP
+#ifdef DEBUG
     static std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>> read_cycles(const std::string& file_path);
     static void write_cycles(const std::string& file_path, const std::unordered_map<uint64_t, std::vector<std::vector<uint64_t>>>& cycles);
     static void write_nodes_gfa(const std::string& file_path, const SDBG& sdbg);

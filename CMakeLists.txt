@@ -1,8 +1,21 @@
-cmake_minimum_required(VERSION 3.12)
-project(my_mcaat)
+cmake_minimum_required(VERSION 3.14)
+project(Zuck VERSION 6.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(STATIC_BUILD "Build a dependency-free static executable" OFF)
+option(PORTABLE_BUILD "Avoid host-specific CPU instructions" OFF)
+option(SANITIZER "Enable address/UB sanitizers" OFF)
+option(ENABLE_DEBUG "Enable DEBUG diagnostics" OFF)
+option(BUILD_TESTING "Build Zuck tests" OFF)
+
+# Library selection must be configured before dependency discovery. Otherwise
+# STATIC_BUILD can silently retain an absolute path to a shared libz.
+if(STATIC_BUILD)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    set(ZLIB_USE_STATIC_LIBS ON)
+endif()
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
@@ -33,11 +46,6 @@ find_package(OpenMP REQUIRED)
 
 # ── Options ───────────────────────────────────────────────────────────────────
 
-option(STATIC_BUILD "Build static executable"      OFF)
-option(SANITIZER    "Enable address/UB sanitizers" OFF)
-option(ENABLE_DEBUG "Enable DEBUG macro (dev main)" OFF)
-option(BUILD_TESTING "Build MY_MCAAT tests" OFF)
-
 if(ENABLE_DEBUG)
     add_definitions(-DDEBUG)
     include(FetchContent)
@@ -54,15 +62,15 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-unused-function")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprefetch-loop-arrays -funroll-loops")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+if(PORTABLE_BUILD)
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+endif()
 set(CMAKE_CXX_FLAGS_DEBUG   "-g -ggdb -O1 -D_GLIBCXX_DEBUG")
 
 if(SANITIZER)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fsanitize=undefined")
-endif()
-
-if(STATIC_BUILD)
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
 endif()
 
 # ── Sub-libraries ─────────────────────────────────────────────────────────────
@@ -71,15 +79,20 @@ set(MEGAHIT_SRC "${CMAKE_SOURCE_DIR}/libs/megahit/src")
 
 # The vendored kseqpp snapshot does not include its optional test directory.
 # Keep its tests disabled while retaining the top-level BUILD_TESTING choice.
-set(MY_MCAAT_SAVED_BUILD_TESTING ${BUILD_TESTING})
+set(ZUCK_SAVED_BUILD_TESTING ${BUILD_TESTING})
 set(BUILD_TESTING OFF)
 add_subdirectory(libs/kseqpp)
-set(BUILD_TESTING ${MY_MCAAT_SAVED_BUILD_TESTING})
+set(BUILD_TESTING ${ZUCK_SAVED_BUILD_TESTING})
 
 set(spoa_build_exe   OFF CACHE BOOL "" FORCE)
 set(spoa_build_tests OFF CACHE BOOL "" FORCE)
 set(spoa_use_cereal  OFF CACHE BOOL "" FORCE)
 set(spoa_use_simde   OFF CACHE BOOL "" FORCE)
+if(PORTABLE_BUILD)
+    # SPOA otherwise appends its own -march=native after the top-level release
+    # flags have been made portable.
+    set(spoa_optimize_for_native OFF CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(libs/spoa)
 
 # ── Include paths ─────────────────────────────────────────────────────────────
@@ -93,8 +106,7 @@ include_directories(${phmap_SOURCE_DIR})
 
 # ── Source globs ──────────────────────────────────────────────────────────────
 
-file(GLOB_RECURSE MAIN_SOURCE          "src/*.cpp")
-file(GLOB_RECURSE SOURCES_WITHOUT_MAIN "src/*.cpp")
+file(GLOB_RECURSE SOURCES_WITHOUT_MAIN CONFIGURE_DEPENDS "src/*.cpp")
 list(REMOVE_ITEM SOURCES_WITHOUT_MAIN "${CMAKE_SOURCE_DIR}/src/main.cpp")
 
 file(GLOB_RECURSE SDBG_SOURCE    "${MEGAHIT_SRC}/sdbg/*.cpp")
@@ -122,11 +134,33 @@ set(MEGAHIT_SOURCES
     ${MEGAHIT_EXTRAS}
 )
 
-# ── Executable: my_mcaat ──────────────────────────────────────────────────────
+# ── Executable: Zuck ──────────────────────────────────────────────────────
 
-add_executable(my_mcaat ${MAIN_SOURCE} ${MEGAHIT_SOURCES})
+# Compile shared production code once; helper tests link the same objects.
+add_library(zuck_core STATIC ${SOURCES_WITHOUT_MAIN} ${MEGAHIT_SOURCES})
+add_executable(Zuck src/main.cpp)
+target_link_libraries(Zuck PRIVATE zuck_core)
 
-target_link_libraries(my_mcaat PRIVATE
+# Identify the compiled source even when the checkout contains local edits.
+# Reconfigure after source edits so the identifier cannot silently go stale.
+file(GLOB_RECURSE IDENTITY_SOURCES CONFIGURE_DEPENDS
+    RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "include/*.h" "src/*.cpp" "libs/*.h" "libs/*.hpp" "libs/*.c" "libs/*.cpp"
+    "libs/*CMakeLists.txt" "cmake/*.in")
+list(APPEND IDENTITY_SOURCES "CMakeLists.txt")
+list(SORT IDENTITY_SOURCES)
+set(ZUCK_SOURCE_IDENTITY "")
+foreach(source IN LISTS IDENTITY_SOURCES)
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${source}" source_hash)
+    string(APPEND ZUCK_SOURCE_IDENTITY "${source}:${source_hash}\n")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+endforeach()
+string(SHA256 ZUCK_SOURCE_SHA256 "${ZUCK_SOURCE_IDENTITY}")
+configure_file(cmake/build_identity.h.in generated/Zuck_build_identity.h @ONLY)
+target_include_directories(zuck_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated" ${ZLIB_INCLUDE_DIRS})
+
+target_link_libraries(zuck_core PUBLIC
     ${ZLIB_LIBRARIES}
     spoa::spoa
     fmt::fmt
@@ -135,32 +169,61 @@ target_link_libraries(my_mcaat PRIVATE
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(test_bounded_cycle_search
-        tests/test_bounded_cycle_search.cpp)
-    target_include_directories(test_bounded_cycle_search PRIVATE include)
-    add_test(NAME bounded_cycle_search COMMAND test_bounded_cycle_search)
-    add_executable(test_alternative_repeat_view
-        tests/test_alternative_repeat_view.cpp)
-    target_include_directories(test_alternative_repeat_view PRIVATE include)
-    add_test(NAME alternative_repeat_view COMMAND test_alternative_repeat_view)
+    # Each test uses production headers; C++ helper tests can also link zuck_core.
+    function(zuck_cpp_test name)
+        add_executable(test_${name} tests/test_${name}.cpp)
+        target_link_libraries(test_${name} PRIVATE zuck_core)
+        add_test(NAME ${name} COMMAND test_${name})
+    endfunction()
+    foreach(name IN ITEMS array_database database_reads database_groups
+            element_confidence supported_calls read_recruitment boundary_candidates bounded_cycle_search alternative_repeat_view
+            local_boundary_graph motif_cliff_boundary directed_haplotype_paths cross_variant_scaffolds
+            short_spacer_filter strand_equivalent_groups terminal_variant_rescue
+            read_linked_groups algorithm_helpers spacer_ordering)
+        zuck_cpp_test(${name})
+    endforeach()
+
+    if(ENABLE_DEBUG)
+        add_executable(test_debug_io tests/test_debug_io.cpp)
+        target_link_libraries(test_debug_io PRIVATE zuck_core)
+        add_test(NAME debug_io COMMAND test_debug_io
+            ${CMAKE_CURRENT_BINARY_DIR}/debug-cycle-test.json)
+    endif()
+
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
-        add_test(NAME two_sided_boundaries
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_two_sided_boundaries.py $<TARGET_FILE:my_mcaat>)
-        add_test(NAME cycle_enumeration
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cycle_enumeration.py)
-        add_test(NAME cli_io_errors
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_io.py $<TARGET_FILE:my_mcaat>)
+        function(zuck_python_test name script)
+            add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/${script} ${ARGN})
+        endfunction()
+        foreach(name IN ITEMS annotations build_array_database cycle_enumeration search_partitions experimental_paths benchmark_runner)
+            zuck_python_test(${name} test_${name}.py)
+        endforeach()
+        foreach(name IN ITEMS array_database_cli element_confidence_cli supported_calls_cli
+                family_repeat_context_cli read_recruitment_cli
+                repeat_mixture_refinement_cli
+                two_sided_boundaries graph_settings_cli candidate_evidence_cli
+                length_constraints_cli result_bundle strand_coalescing_cli
+                terminal_variant_rescue_cli read_linked_groups_cli settings_cli)
+            zuck_python_test(${name} test_${name}.py $<TARGET_FILE:Zuck>)
+        endforeach()
+        zuck_python_test(cli_io_errors test_cli_io.py $<TARGET_FILE:Zuck>)
+        zuck_python_test(short_spacer_filter_cli test_short_spacer_filter.py $<TARGET_FILE:Zuck>)
+        if(STATIC_BUILD)
+            zuck_python_test(standalone_binary test_standalone_binary.py $<TARGET_FILE:Zuck>)
+        endif()
     endif()
 endif()
 
 if(ENABLE_DEBUG)
-    target_link_libraries(my_mcaat PRIVATE nlohmann_json::nlohmann_json)
-    target_compile_definitions(my_mcaat PRIVATE DEBUG)
+    target_link_libraries(zuck_core PUBLIC nlohmann_json::nlohmann_json)
+    target_compile_definitions(Zuck PRIVATE DEBUG)
 endif()
 
 if(STATIC_BUILD)
-    set_target_properties(my_mcaat PROPERTIES LINK_SEARCH_START_STATIC ON)
-    target_link_options(my_mcaat PRIVATE -Wl,--whole-archive -lpthread -Wl,--no-whole-archive -static)
+    set_target_properties(Zuck PROPERTIES
+        LINK_SEARCH_START_STATIC ON
+        LINK_SEARCH_END_STATIC ON)
+    target_link_options(Zuck PRIVATE -static)
 endif()
 
