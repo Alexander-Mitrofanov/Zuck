@@ -51,6 +51,7 @@ inline void write_manifest(const fs::path& directory, const std::string& input,
         << (settings.read_first_family_recut ? ", \"read_first_family_recut\": true" : "")
         << (settings.read_first_family_admission ? ", \"read_first_family_admission\": true" : "")
         << (settings.read_first_shallow_rescue ? ", \"read_first_shallow_rescue\": true" : "")
+        << (settings.read_first_sparse_junctions ? ", \"read_first_sparse_junctions\": true" : "")
         << ", \"read_recruitment\": " << settings.read_recruitment
         << ", \"local_boundary_graph\": " << settings.local_boundary_graph
         << ", \"motif_cliff_boundary\": " << settings.motif_cliff_boundary

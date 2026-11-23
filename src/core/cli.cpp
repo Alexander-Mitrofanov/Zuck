@@ -155,6 +155,7 @@ void print_help() {
                  << "  --read-first-family-recut <true|false>  Reassign graph boundaries supported by distinct read repeat families [default: false]\n"
                  << "  --read-first-family-admission <true|false>  Use family evidence to select read-only spacers [default: false]\n"
                  << "  --read-first-shallow-rescue <true|false>    Enable additional read evidence for sparse spacers [default: false]\n"
+                 << "  --read-first-sparse-junctions <true|false>  Add complete read spacers from independently supported families [default: false]\n"
                  << "  --traversal-partitions <int>   Logical search partitions, independent of threads [default: 8]\n"
                  << "  --spacer-min-length <int>      Optional output length bound; 0 disables [default: 0]\n"
                  << "  --spacer-max-length <int>      Optional output length bound; 0 disables [default: 0]\n"
@@ -328,6 +329,8 @@ Settings parse_arguments(int argc, char* argv[]) {
             settings.read_first_family_admission = Zuck::options::boolean(require_value(i, arg), arg);
         } else if (arg == "--read-first-shallow-rescue") {
             settings.read_first_shallow_rescue = Zuck::options::boolean(require_value(i, arg), arg);
+        } else if (arg == "--read-first-sparse-junctions") {
+            settings.read_first_sparse_junctions = Zuck::options::boolean(require_value(i, arg), arg);
         } else if (arg == "--threshold-multiplicity") {
             settings.cycle_finder_settings.threshold_multiplicity =
                 Zuck::options::unsigned_integer(require_value(i, arg), arg);
@@ -374,6 +377,8 @@ Settings parse_arguments(int argc, char* argv[]) {
         throw runtime_error("Error: --read-first requires reads and an enabled call profile");
     if ((settings.read_first_family_admission || settings.read_first_shallow_rescue) && !settings.read_first)
         throw runtime_error("Error: Family admission and shallow rescue require --read-first true");
+    if (settings.read_first_sparse_junctions && !settings.read_first)
+        throw runtime_error("Error: --read-first-sparse-junctions requires --read-first true");
     if (settings.read_first_family_recut && !settings.read_first)
         throw runtime_error("Error: --read-first-family-recut requires --read-first true");
     if (settings.candidate_evidence && !settings.two_sided_boundaries)

@@ -6,6 +6,7 @@
 #include "crispr_array/read_first_variants.h"
 #include "crispr_array/read_first_family_recut.h"
 #include "crispr_array/read_first_family_admission.h"
+#include "crispr_array/read_first_sparse.h"
 #include "crispr_array/supported_calls.h"
 #include <fstream>
 #include <string_view>
@@ -53,6 +54,76 @@ inline bool terminal_recut(const Call& observed, std::string repeat, std::string
     }
     return false;
 }
+
+// Compare additions with the completed standard call set. The sparse pass
+// cannot change graph precedence, native recuts, or the original family gates.
+class SparseInventory {
+    std::set<std::string> occupied_units_;
+    std::map<std::string,std::set<std::string>> family_spacers_;
+
+    void index_spacer(const std::string& repeat, const std::string& spacer) {
+        const auto canonical = read_linked::canonical(repeat);
+        family_spacers_[canonical].insert(repeat == canonical ? spacer : read_linked::reverse_complement(spacer));
+    }
+
+public:
+    void keep(const std::string& repeat, const std::string& spacer) {
+        occupied_units_.insert(element_confidence::circular_identity(repeat + spacer));
+        index_spacer(repeat,spacer);
+    }
+
+    void append(const std::filesystem::path& directory, const std::vector<Call>& proposals,
+                const supported_calls::Result& graph, const Settings& settings, const FamilyAdmission& admission,
+                std::set<std::string>& inventory, std::ostream& entries,
+                std::map<std::string,std::size_t>& counts) {
+        const auto allowed = [&](const Call& call) {
+            return settings.dna_sequence_settings.pair_allowed(call.repeat,call.spacer) &&
+                   supported_calls::length_allowed(graph.profile,call.spacer.size());
+        };
+        std::map<std::string,std::set<std::string>> cuts, owners;
+        for (const auto& call : proposals) {
+            if (!allowed(call)) continue;
+            const auto canonical = array_database::canonical(call.spacer);
+            const auto unit = element_confidence::circular_identity(call.repeat + call.spacer);
+            if (occupied_units_.count(unit) || inventory.count(canonical)) continue;
+            cuts[unit].insert(canonical);
+            owners[canonical].insert(call.repeat);
+            index_spacer(call.repeat,call.spacer);
+        }
+        std::ofstream log(directory / "read_first_sparse.tsv");
+        log << "family_repeat\tspacer\tcanonical_spacer\ttemplates\tfull_pairs\tdecision\n";
+        counts["read_first_sparse_scored_proposals"] = proposals.size();
+        counts["read_first_sparse_added_types"] = 0;
+        for (const auto& call : proposals) {
+            const auto canonical = array_database::canonical(call.spacer);
+            const auto unit = element_confidence::circular_identity(call.repeat + call.spacer);
+            const char* decision = "selected";
+            if (!allowed(call)) decision = "length";
+            else if (inventory.count(canonical)) decision = "already_reported";
+            else if (occupied_units_.count(unit)) decision = "existing_boundary";
+            else if (cuts.at(unit).size() > 1 || owners.at(canonical).size() > 1)
+                decision = "ambiguous_model";
+            else if (settings.read_first_family_admission &&
+                     std::string_view(admission.decision(call)) == "dense_family_singleton_allele")
+                decision = "dense_family_singleton_allele";
+            else if (call.templates == 1 && clipped::near_known(call.spacer,
+                         family_spacers_.at(read_linked::canonical(call.repeat))))
+                decision = "singleton_near_allele";
+            else {
+                inventory.insert(canonical);
+                entries << "sparse_junction\t" << call.repeat << '\t' << call.spacer << '\t'
+                        << canonical << '\t' << call.templates << '\t' << call.full_pairs
+                        << '\t' << call.repeat << "\t\n";
+                ++counts["read_first_sparse_added_types"];
+            }
+            log << call.repeat << '\t' << call.spacer << '\t' << canonical << '\t' << call.templates
+                << '\t' << call.full_pairs << '\t' << decision << '\n';
+            ++counts[std::string("read_first_sparse_decision_") + decision];
+        }
+        log.close();
+        if (!log) throw std::runtime_error("Failed to write sparse junction evidence");
+    }
+};
 
 inline void write_inventory(const std::filesystem::path& directory,
                             const supported_calls::Result& graph_calls,
@@ -168,6 +239,7 @@ inline void write_inventory(const std::filesystem::path& directory,
         counts["read_first_family_recut_rows"] = 0;
     }
     std::set<std::string> inventory, graph_units, retained;
+    SparseInventory sparse_inventory;
     std::set<const Call*> promoted;
     for (const auto& row : graph_calls.rows) {
         if (!row.selected) continue;
@@ -221,6 +293,7 @@ inline void write_inventory(const std::filesystem::path& directory,
             boundaries << replacement->repeat << '\t' << replacement->spacer << "\treplaced\t" << contexts << '\n';
         } else {
             retained.insert(row.canonical_spacer);
+            if (settings.read_first_sparse_junctions) sparse_inventory.keep(row.repeat_variant,row.spacer);
             entries << "graph\t" << row.repeat_variant << '\t' << row.spacer << '\t'
                     << row.canonical_spacer << "\t\t\tArray_" << row.array_index + 1
                     << '\t' << row.entry_index << '\n';
@@ -250,6 +323,7 @@ inline void write_inventory(const std::filesystem::path& directory,
         }
         if (std::string(decision).compare(0, 8, "selected") == 0) {
             inventory.insert(canonical);
+            if (settings.read_first_sparse_junctions) sparse_inventory.keep(call.repeat,call.spacer);
             entries << "read_first\t" << call.repeat << '\t' << call.spacer << '\t' << canonical
                     << '\t' << call.templates << '\t' << call.full_pairs << '\t' << call.repeat << "\t\n";
         }
@@ -257,6 +331,10 @@ inline void write_inventory(const std::filesystem::path& directory,
                  << call.templates << '\t' << call.full_pairs << '\t' << decision << '\t'
                  << (index < within_read ? "one_read" : index < through_complementary ?
                      "complementary_junctions" : index < through_variants ? "variant_junctions" : "clipped_junction") << '\n';
+    }
+    if (settings.read_first_sparse_junctions) {
+        const auto proposals = recruit_sparse(families,paths,counts);
+        sparse_inventory.append(directory,proposals,graph_calls,settings,admission,inventory,entries,counts);
     }
     std::size_t id = 0;
     for (const auto& spacer : inventory) fasta << ">spacer_" << ++id << '\n' << spacer << '\n';

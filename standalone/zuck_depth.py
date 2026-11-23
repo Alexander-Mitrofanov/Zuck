@@ -24,7 +24,7 @@ def arguments():
     common.add_argument("--scanner", type=Path, default=HERE / "zuck-kmer-spectrum",
                         help="Path to the k-mer spectrum executable.")
     commands.add_parser("estimate", parents=[common], help="Write the coverage estimate as JSON.")
-    run = commands.add_parser("run", parents=[common], help="Estimate coverage and run Zuck.")
+    run = argparse.ArgumentParser(add_help=False)
     run.add_argument("--zuck", type=Path, default=HERE / "Zuck", help="Zuck 6.1 executable.")
     run.add_argument("--settings", type=Path, default=HERE / "v6.1.conf",
                      help="Native preset. The route controls the two read-first switches below.")
@@ -33,6 +33,8 @@ def arguments():
     for name in ROUTED_FLAGS:
         run.add_argument("--" + name, choices=("true", "false"),
                          help="Override this switch after coverage routing.")
+    commands.add_parser("run", parents=[common, run], help="Use the original 6.1 shallow-only routing policy.")
+    commands.add_parser("adaptive", parents=[common, run], help="Run native sparse-junction recovery at low predicted depth.")
     return parser.parse_args()
 
 
@@ -82,6 +84,13 @@ def run(args, reads, prediction):
     folder = args.output_folder.resolve()
     low = prediction["regime"] == "low"
     switches = dict(zip(ROUTED_FLAGS, (True, not low)))
+    mode = "shallow_only" if low else "full_6.1"
+    policy = "shallow_only_if_low_v1"
+    if args.command == "adaptive":
+        switches["read-first-family-admission"] = True
+        switches["read-first-sparse-junctions"] = low
+        mode = "sparse_junctions" if low else "full_6.1"
+        policy = "native_sparse_junctions_if_low_v1"
     overrides = {}
     for flag in ROUTED_FLAGS:
         value = getattr(args, flag.replace("-", "_"))
@@ -92,7 +101,7 @@ def run(args, reads, prediction):
     for flag, value in switches.items():
         command.extend(("--" + flag, str(value).lower()))
 
-    routing = {"policy": "shallow_only_if_low_v1", "selected_mode": "shallow_only" if low else "full_6.1",
+    routing = {"policy": policy, "selected_mode": mode,
                "effective_switches": switches, "explicit_overrides": overrides, "argv": command,
                "settings_sha256": hashlib.sha256(settings_bytes).hexdigest(), "native_exit_status": None}
     report = {**prediction, "routing": routing}
@@ -128,7 +137,7 @@ def main():
     if len(reads) == 2 and reads[0].samefile(reads[1]):
         raise ValueError("Two mate inputs must identify different files")
     prediction = estimate(executable(args.scanner), reads)
-    if args.command == "run":
+    if args.command in {"run", "adaptive"}:
         return run(args, reads, prediction)
     sys.stdout.write(json_text(prediction))
     return 0
