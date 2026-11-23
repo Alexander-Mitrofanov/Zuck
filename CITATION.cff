@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "Cite this software with its source revision and run-manifest fingerprint."
 title: "Zuck"
 type: software
-version: "6.0"
+version: "6.1"
 date-released: 2026-11-23
 authors:
   - family-names: "Talibli"

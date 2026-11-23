@@ -33,6 +33,8 @@ struct Settings {
     bool adaptive_coverage = false;
     bool read_first = false;
     bool read_first_family_recut = false;
+    bool read_first_family_admission = false;
+    bool read_first_shallow_rescue = false;
     struct CoverageSupport {
         bool measured = false;
         bool low_support = false;
@@ -347,6 +349,8 @@ struct Settings {
             else if (key == "adaptive-coverage") { adaptive_coverage = database_boolean(val, key); }
             else if (key == "read-first") { read_first = database_boolean(val, key); }
             else if (key == "read-first-family-recut") { read_first_family_recut = database_boolean(val, key); }
+            else if (key == "read-first-family-admission") { read_first_family_admission = database_boolean(val, key); }
+            else if (key == "read-first-shallow-rescue") { read_first_shallow_rescue = database_boolean(val, key); }
             else if (key == "threshold-multiplicity") {
                 cycle_finder_settings.threshold_multiplicity = Zuck::options::unsigned_integer(val, key);
                 cycle_finder_settings.threshold_explicit = true;

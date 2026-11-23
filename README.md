@@ -1,11 +1,20 @@
-# Zuck 6.0
+# Zuck 6.1
 
 Zuck detects CRISPR repeat and spacer groups in raw metagenomic reads. It
 builds a compact graph, discovers bounded cycles, and reconstructs repeat and
 spacer sequences. Retained cycles support fast, reproducible post-processing
 experiments without rebuilding the graph.
 
-Version 6.0 adds read-first discovery for sparsely sampled repeat families,
+The 6.1 research preset tests two changes to read-first discovery. Use
+`build/Zuck --settings standalone/v6.1.conf --input-files R1.fastq.gz R2.fastq.gz --output-folder result`.
+`--read-first-shallow-rescue` considers a complete spacer next to a repeat
+clipped by the end of a read. `--read-first-family-admission` screens
+single-fragment alternatives in repeat families already well represented by
+the graph. Both require `--read-first true` and default to off. The preset
+enables them together. Read `read_first_spacers.fasta` for the final inventory and
+`read_first_observations.tsv` for the evidence and decisions.
+
+Version 6.0 introduced read-first discovery for sparsely sampled repeat families,
 adaptive graph search for low-support libraries, and a read-based correction
 for boundaries shared by related repeat families. All three options default
 to off in the native executable. [Read-first usage and results](#read-first-spacer-discovery)

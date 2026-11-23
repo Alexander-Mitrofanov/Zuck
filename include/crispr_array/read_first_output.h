@@ -5,8 +5,10 @@
 #include "crispr_array/read_first_overlap.h"
 #include "crispr_array/read_first_variants.h"
 #include "crispr_array/read_first_family_recut.h"
+#include "crispr_array/read_first_family_admission.h"
 #include "crispr_array/supported_calls.h"
 #include <fstream>
+#include <string_view>
 
 namespace Zuck { namespace read_first {
 
@@ -57,7 +59,15 @@ inline void write_inventory(const std::filesystem::path& directory,
                             const Settings& settings, std::map<std::string, std::size_t>& counts) {
     const auto paths = settings.effective_grouping_reads();
     const auto families = discover(paths, counts);
-    auto observations = recruit(families, paths, counts);
+    std::vector<Call> clipped;
+    auto observations = recruit(families, paths, counts, settings.read_first_shallow_rescue, &clipped);
+    FamilyAdmission admission;
+    if (settings.read_first_family_admission) {
+        admission.index(graph_calls, observations, settings);
+        counts["read_first_graph_represented_families"] = admission.family_count();
+        counts["read_first_dense_singleton_alleles_withheld"] = 0;
+        counts["read_first_dense_whole_q30_protected"] = 0;
+    }
     const auto established = diverse_families(observations);
     counts["read_first_diverse_families"] = established.size();
     const auto within_read = observations.size();
@@ -75,6 +85,18 @@ inline void write_inventory(const std::filesystem::path& directory,
         if (!existing_spacers.count(array_database::canonical(call.spacer)) &&
             !existing_units.count(element_confidence::circular_identity(call.repeat + call.spacer)))
             observations.push_back(call);
+    }
+    const auto through_variants = observations.size();
+    if (!clipped.empty()) {
+        for (std::size_t i = through_complementary; i < through_variants; ++i) {
+            existing_spacers.insert(array_database::canonical(observations[i].spacer));
+            existing_units.insert(element_confidence::circular_identity(observations[i].repeat + observations[i].spacer));
+        }
+        for (const auto& call : clipped) {
+            if (!existing_spacers.count(array_database::canonical(call.spacer)) &&
+                !existing_units.count(element_confidence::circular_identity(call.repeat + call.spacer)))
+                observations.push_back(call);
+        }
     }
     std::ofstream allele_table(directory / "read_first_variant_evidence.tsv");
     allele_table << "family_repeat\tspacer\tproof\ttemplates\tfull_pairs\texact_templates\tshort_templates\tflank_substitutions\n";
@@ -105,10 +127,16 @@ inline void write_inventory(const std::filesystem::path& directory,
     evidence << "family_repeat\tspacer\tcanonical_spacer\ttemplates\tfull_pairs\tdecision\tgeometry\n";
     boundaries << "graph_entry_id\tgraph_repeat\tgraph_spacer\tcircular_unit\tread_repeat\tread_spacer\tdecision\tother_contexts\n";
     std::map<std::string, std::vector<const Call*>> by_unit;
-    for (const auto& call : observations) {
+    std::map<std::string, std::size_t> clipped_models;
+    for (std::size_t i = 0; i < observations.size(); ++i) {
+        const auto& call = observations[i];
         if (established.count(call.repeat) && settings.dna_sequence_settings.pair_allowed(call.repeat, call.spacer) &&
-            supported_calls::length_allowed(graph_calls.profile, call.spacer.size()))
-            by_unit[element_confidence::circular_identity(call.repeat + call.spacer)].push_back(&call);
+            supported_calls::length_allowed(graph_calls.profile, call.spacer.size())) {
+            const auto key = element_confidence::circular_identity(call.repeat + call.spacer);
+            // Clipped junctions may add a spacer. Only the established evidence paths can replace a graph boundary.
+            if (i < through_variants) by_unit[key].push_back(&call);
+            else ++clipped_models[key];
+        }
     }
     family_recut::Index family_index;
     std::set<std::string> conflicting_units;
@@ -211,7 +239,15 @@ inline void write_inventory(const std::filesystem::path& directory,
         else if (promoted.count(&call)) decision = "selected_recut";
         else if (retained.count(canonical)) decision = "graph_spacer";
         else if (graph_units.count(unit)) decision = "graph_boundary";
-        else if (by_unit.at(unit).size() > 1) decision = "ambiguous_boundary";
+        else if ((index < through_variants ? by_unit.at(unit).size() : clipped_models.at(unit)) > 1)
+            decision = "ambiguous_boundary";
+        else if (settings.read_first_family_admission) {
+            decision = admission.decision(call);
+            if (std::string_view(decision) == "dense_family_singleton_allele")
+                ++counts["read_first_dense_singleton_alleles_withheld"];
+            else if (std::string_view(decision) == "selected_dense_whole_q30")
+                ++counts["read_first_dense_whole_q30_protected"];
+        }
         if (std::string(decision).compare(0, 8, "selected") == 0) {
             inventory.insert(canonical);
             entries << "read_first\t" << call.repeat << '\t' << call.spacer << '\t' << canonical
@@ -220,7 +256,7 @@ inline void write_inventory(const std::filesystem::path& directory,
         evidence << call.repeat << '\t' << call.spacer << '\t' << canonical << '\t'
                  << call.templates << '\t' << call.full_pairs << '\t' << decision << '\t'
                  << (index < within_read ? "one_read" : index < through_complementary ?
-                     "complementary_junctions" : "variant_junctions") << '\n';
+                     "complementary_junctions" : index < through_variants ? "variant_junctions" : "clipped_junction") << '\n';
     }
     std::size_t id = 0;
     for (const auto& spacer : inventory) fasta << ">spacer_" << ++id << '\n' << spacer << '\n';

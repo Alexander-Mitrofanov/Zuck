@@ -1,5 +1,16 @@
 # Zuck changelog
 
+## Zuck 6.1 research candidate — 23 November 2026
+
+- Added optional recruitment of complete spacers where a read ends inside a
+  repeat. Independent spacer contexts establish the repeat family before
+  these observations can add a call.
+- Added family-specific screening of single-fragment read-only spacer
+  variants when the graph and independent fragments already support a
+  nearby sequence. The evidence ledger records the selection decision.
+- Added `standalone/v6.1.conf` to run both changes with the 6.0 benchmark
+  settings. Use the two switches independently for ablation studies.
+
 ## Zuck 6.0 — 23 November 2026
 
 - Added `--read-first true` to discover repeat families in FASTQ reads,

@@ -1,7 +1,7 @@
 #ifndef ZUCK_READ_FIRST_H
 #define ZUCK_READ_FIRST_H
 
-#include "crispr_array/read_first_seeds.h"
+#include "crispr_array/read_first_clipped_junction.h"
 #include "crispr_array/read_recruitment.h"
 
 namespace Zuck { namespace read_first {
@@ -9,6 +9,8 @@ namespace Zuck { namespace read_first {
 struct Call {
     std::string repeat, spacer;
     std::size_t templates, full_pairs;
+    // Spacer positions observed at Q30 on an intact repeat-spacer-repeat read.
+    std::uint64_t whole_q30_bases = 0;
 };
 
 namespace extraction {
@@ -30,6 +32,7 @@ struct Placement {
 
 struct Witness {
     bool full_pair = false;
+    std::uint64_t whole_q30_bases = 0;
     bool one_full = false;
     bool high_quality = false;
     std::size_t minimum_offset = std::numeric_limits<std::size_t>::max(), maximum_offset = 0;
@@ -38,6 +41,7 @@ struct Witness {
 
 struct Evidence {
     std::map<Unit, bool> units;  // True if either mate contains both complete repeat copies.
+    std::uint64_t whole_q30_bases = 0;
     bool one_full = false;
     bool high_quality = false;
     std::size_t minimum_offset = std::numeric_limits<std::size_t>::max(), maximum_offset = 0;
@@ -74,8 +78,11 @@ public:
         matcher_.build();
     }
 
+    const auto& strands() const { return strands_; }
+
     bool scan(const klibpp::KSeq& read, std::map<Key, Witness>& pending,
-              std::map<std::string, std::size_t>& counts) const {
+              std::map<std::string, std::size_t>& counts, const clipped::Collector* clipped_collector,
+              std::vector<clipped::Candidate>& clipped_candidates) const {
         const auto& sequence = read.seq;
         if (read.qual.empty() || sequence.size() < 2 * anchor + read_recruitment::MINIMUM_SPACER)
             return true;
@@ -120,6 +127,9 @@ public:
             }
         }
 
+        if (clipped_collector)
+            clipped_collector->scan(read,left,right,strands_,placements,clipped_candidates);
+
         read_evidence::QualitySpans singleton_quality(read.qual, 15);
         for (const auto& p : placements) {
             // Competing overlapping spacer intervals and ambiguous family ownership
@@ -145,7 +155,13 @@ public:
             }
             auto& witness = pending[{strand.family, spacer}];
             const auto size = strand.repeat.size();
-            witness.full_pair |= p.left == size && p.right == size;
+            if (p.left == size && p.right == size) {
+                witness.full_pair = true;
+                static_assert(read_recruitment::MAXIMUM_SPACER <= 64);
+                for (std::size_t i = 0; i < qualities.size(); ++i)
+                    if (static_cast<unsigned char>(qualities[i]) >= 33 + 30)
+                        witness.whole_q30_bases |= std::uint64_t{1} << i;
+            }
             const bool one_full = p.left == size || p.right == size;
             witness.one_full |= one_full;
             witness.high_quality |= one_full && singleton_quality.passes(p.begin, p.end, 0.5);
@@ -231,11 +247,14 @@ inline std::set<std::size_t> repeated_units(const std::vector<Family>& families,
 } // namespace extraction
 
 inline std::vector<Call> recruit(const std::vector<Family>& families, const std::vector<std::string>& paths,
-                                 std::map<std::string, std::size_t>& counts) {
+                                 std::map<std::string, std::size_t>& counts, bool shallow_rescue = false,
+                                 std::vector<Call>* clipped_calls = nullptr) {
     using namespace extraction;
     if (families.empty() || paths.empty()) return {};
     if (paths.size() > 2) throw std::invalid_argument("Read-first recruitment expects one or two inputs");
     Anchors anchors(families);
+    std::unique_ptr<clipped::Collector> collector;
+    if (shallow_rescue && clipped_calls) collector = std::make_unique<clipped::Collector>(families);
     std::map<Key, Evidence> inventory;
     std::size_t memberships = 0;
     bool overflow = false;
@@ -250,12 +269,19 @@ inline std::vector<Call> recruit(const std::vector<Family>& families, const std:
         counts["read_first_recruit_no_quality"] += a.qual.empty() + (second && b.qual.empty());
         if (overflow) continue;
         std::map<Key, Witness> pending;
-        if (!anchors.scan(a, pending, counts) || (second && !anchors.scan(b, pending, counts))) {
+        std::vector<clipped::Candidate> first_cuts, second_cuts;
+        if (!anchors.scan(a,pending,counts,collector.get(),first_cuts) ||
+            (second && !anchors.scan(b,pending,counts,collector.get(),second_cuts))) {
             ++counts["read_first_recruit_limited_templates"];
             continue;
         }
-        if (pending.empty()) continue;
+        if (pending.empty() && first_cuts.empty() && second_cuts.empty()) continue;
         const auto unit = read_recruitment::detail::unit_identity(a.seq, second ? b.seq : "", bool(second));
+        if (!first_cuts.empty() || !second_cuts.empty()) {
+            const auto fragment = seeds::seed_fragment(a,second ? &b : nullptr);
+            collector->store(a,anchors.strands(),first_cuts,unit,fragment);
+            if (second) collector->store(b,anchors.strands(),second_cuts,unit,fragment);
+        }
         for (const auto& item : pending) {
             auto& evidence = inventory[item.first];
             const auto& witness = item.second;
@@ -263,6 +289,7 @@ inline std::vector<Call> recruit(const std::vector<Family>& families, const std:
             added.first->second |= witness.full_pair;
             memberships += added.second;
             evidence.one_full |= witness.one_full;
+            evidence.whole_q30_bases |= witness.whole_q30_bases;
             evidence.high_quality |= witness.high_quality;
             evidence.minimum_offset = std::min(evidence.minimum_offset, witness.minimum_offset);
             evidence.maximum_offset = std::max(evidence.maximum_offset, witness.maximum_offset);
@@ -312,10 +339,30 @@ inline std::vector<Call> recruit(const std::vector<Family>& families, const std:
         }
         const auto full = std::count_if(evidence.units.begin(), evidence.units.end(),
                                         [](const auto& u) { return u.second; });
-        calls.push_back({repeat, spacer, evidence.units.size(), static_cast<std::size_t>(full)});
+        calls.push_back({repeat, spacer, evidence.units.size(), static_cast<std::size_t>(full),
+                         evidence.whole_q30_bases});
         counts["read_first_one_template_calls"] += evidence.units.size() == 1;
         counts["read_first_family_calibrated_singletons"] += evidence.units.size() == 1 && !evidence.high_quality;
         counts["read_first_double_partial_only_calls"] += !evidence.one_full;
+    }
+    if (collector && !overflow) {
+        std::map<std::size_t,std::set<std::string>> pool;
+        for (const auto& known : inventory) pool[known.first.first].insert(known.first.second);
+        for (const auto& item : collector->candidates()) pool[item.first.first].insert(item.first.second);
+        for (const auto& item : collector->candidates()) {
+            const auto family = item.first.first;
+            const auto& spacer = item.first.second;
+            if (inventory.count(item.first) || repetitive_families.count(family)) continue;
+            if (item.second.size() == 1 && clipped::near_known(spacer,pool.at(family))) {
+                ++counts["read_first_clipped_unconfirmed_alleles"];
+                continue;
+            }
+            if (!tandem_explains(families[family].repeat,spacer))
+                clipped_calls->push_back({families[family].repeat,spacer,item.second.size(),0});
+        }
+        counts["read_first_clipped_candidates"] = collector->candidates().size();
+        counts["read_first_clipped_proposals"] = clipped_calls->size();
+        counts["read_first_clipped_resource_limit"] = collector->limited();
     }
     counts["read_first_recruit_calls"] = calls.size();
     return calls;

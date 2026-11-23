@@ -49,6 +49,8 @@ inline void write_manifest(const fs::path& directory, const std::string& input,
         << ", \"call_profile\": " << json_string(settings.call_profile)
         << ", \"family_repeat_context\": " << settings.family_repeat_context
         << (settings.read_first_family_recut ? ", \"read_first_family_recut\": true" : "")
+        << (settings.read_first_family_admission ? ", \"read_first_family_admission\": true" : "")
+        << (settings.read_first_shallow_rescue ? ", \"read_first_shallow_rescue\": true" : "")
         << ", \"read_recruitment\": " << settings.read_recruitment
         << ", \"local_boundary_graph\": " << settings.local_boundary_graph
         << ", \"motif_cliff_boundary\": " << settings.motif_cliff_boundary
