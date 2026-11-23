@@ -1,5 +1,12 @@
 # Zuck changelog
 
+## Zuck 7.0 — 23 November 2026
+
+- Added FASTQ-based depth estimation and the `adaptive` launcher. A uniform estimate below 5× enables sparse-junction recovery. Mixed or uncertain depth and uniform estimates of at least 5× use the full 6.1 preset.
+- Added a native sparse-junction evidence table and a JSON receipt with the depth estimate, selected route and effective switches. The optional CRASS-assisted merger writes a separate, provenance-labelled spacer inventory.
+- Packaged the coverage scanner, Python launcher and model with the native executable. The native CLI and run manifest report version 7.0.
+- On three new simulated communities, native exact spacer F1 was 54.87% at 1× and 76.33% at 3×. CRASS scored 47.90% and 72.36%. CRASS retained the lead on tolerant F1 at 3×. [Benchmark methods and results](docs/benchmark-7.0.md)
+
 ## Zuck 6.1 research candidate — 23 November 2026
 
 - Added optional recruitment of complete spacers where a read ends inside a

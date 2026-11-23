@@ -1,30 +1,13 @@
-# Zuck standalone for Linux
+# Zuck 7.0 for Linux
 
-`Zuck` is the exact executable tested and installed in the accompanying Docker
-image. It is statically linked, so it does not require Docker, a C++ runtime,
-OpenMP, zlib, or other userspace libraries on the destination machine.
+Extract the Linux x86-64 release archive, enter the extracted directory and run the commands below. The caller and scanner are statically linked. Coverage estimation and adaptive calling use Python 3 and its standard library.
 
-The executable is portable across Linux distributions on the CPU architecture
-for which the image was built. It deliberately avoids `-march=native`; the
-kernel and CPU must still match the build architecture (for example,
-`linux/amd64`).
-
-Verify and run it from the extracted directory:
-
-```bash
+```sh
 sha256sum -c SHA256SUMS
-./Zuck --help
-./Zuck --input-files reads_R1.fastq reads_R2.fastq \
-  --output-folder result --threads 4 --ram 4G
+./Zuck --version
+python3 zuck_depth.py adaptive --input-files reads_R1.fastq.gz reads_R2.fastq.gz --output-folder result
 ```
 
-To build a tested bundle from the source tree with Docker BuildKit:
+Use one FASTQ for single-end reads or two mate files for paired-end reads. Both plain and gzip-compressed FASTQ are supported. The benchmark preset uses four threads and a 4G native RAM setting. Choose a new or empty output directory.
 
-```bash
-scripts/export_standalone.sh
-```
-
-The Docker build is capped at four compilation and test workers by default.
-Override `BUILD_JOBS` or `TEST_JOBS` only when the build environment permits it.
-
-The optional coverage preflight estimates sequencing depth from FASTQ and can select a Zuck 6.1 calling mode. [Build and run the preflight](COVERAGE.md)
+The native spacer inventory is `result/read_first_spacers.fasta`. Check `result/coverage_routing.json` to see which calling mode was selected. [Adaptive calling and optional CRASS support](ADAPTIVE.md) · [Coverage estimation](COVERAGE.md) · [Benchmark results](https://github.com/Alexander-Mitrofanov/Zuck/blob/v7.0/docs/benchmark-7.0.md)

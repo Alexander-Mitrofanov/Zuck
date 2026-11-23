@@ -43,13 +43,7 @@ RUN ctest --test-dir build --output-on-failure --parallel "${TEST_JOBS}" && \
     ! grep -Fq -- '-march=native' build/compile_commands.json && \
     ! readelf -l build/Zuck | grep -q 'Requesting program interpreter' && \
     ! readelf -d build/Zuck | grep -q '(NEEDED)' && \
-    mkdir -p /standalone && \
-    install -m 0755 build/Zuck /standalone/Zuck && \
-    install -m 0644 LICENSE.txt /standalone/LICENSE.txt && \
-    install -m 0644 UPSTREAM.md /standalone/UPSTREAM.md && \
-    install -m 0644 standalone/README.md /standalone/README.md && \
-    cd /standalone && \
-    sha256sum Zuck LICENSE.txt UPSTREAM.md README.md > SHA256SUMS
+    scripts/package_standalone.sh build /standalone
 
 # Export with:
 # docker build --target standalone --output type=local,dest=dist/zuck-standalone .

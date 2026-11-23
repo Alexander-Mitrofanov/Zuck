@@ -35,9 +35,10 @@ docker build \
 
 container=$(docker create "${image}")
 mkdir -p -- "${output}"
-for artifact in Zuck LICENSE.txt UPSTREAM.md README.md SHA256SUMS; do
+docker cp "${container}:/SHA256SUMS" "${output}/SHA256SUMS"
+while read -r digest artifact; do
     docker cp "${container}:/${artifact}" "${output}/${artifact}"
-done
+done < "${output}/SHA256SUMS"
 
 (
     cd -- "${output}"

@@ -1,23 +1,16 @@
-# Zuck 6.1
+# Zuck 7.0
 
-Zuck detects CRISPR repeat and spacer groups in raw metagenomic reads. It
-builds a compact graph, discovers bounded cycles, and reconstructs repeat and
-spacer sequences. Retained cycles support fast, reproducible post-processing
-experiments without rebuilding the graph.
+Zuck detects CRISPR repeat families and spacer sequences in metagenomic reads. Version 7.0 estimates sequencing depth directly from FASTQ. When reads support a uniform estimate below 5×, it searches for complete spacers observed only once whose boundaries are supported by repeats on both sides. At intermediate, high, mixed or uncertain coverage, it uses the full 6.1 calling logic.
 
-The 6.1 research preset tests two changes to read-first discovery. Use
-`build/Zuck --settings standalone/v6.1.conf --input-files R1.fastq.gz R2.fastq.gz --output-folder result`.
-`--read-first-shallow-rescue` considers a complete spacer next to a repeat
-clipped by the end of a read. `--read-first-family-admission` screens
-single-fragment alternatives in repeat families already well represented by
-the graph. Both require `--read-first true` and default to off. The preset
-enables them together. Read `read_first_spacers.fasta` for the final inventory and
-`read_first_observations.tsv` for the evidence and decisions.
+Download the Linux x86-64 bundle, extract it and run the following commands from its directory. The adaptive launcher requires Python 3. [Zuck 7.0 release](https://github.com/Alexander-Mitrofanov/Zuck/releases/tag/v7.0)
 
-Version 6.0 introduced read-first discovery for sparsely sampled repeat families,
-adaptive graph search for low-support libraries, and a read-based correction
-for boundaries shared by related repeat families. All three options default
-to off in the native executable. [Read-first usage and results](#read-first-spacer-discovery)
+```sh
+sha256sum -c SHA256SUMS
+./Zuck --version
+python3 zuck_depth.py adaptive --input-files R1.fastq.gz R2.fastq.gz --output-folder result
+```
+
+Read `result/read_first_spacers.fasta` for the native spacer inventory and `result/coverage_routing.json` for the depth estimate and calling mode. Native Zuck runs independently of CRASS. The optional assisted mode uses an external CRASS installation and writes its own inventory. [Calling modes and outputs](standalone/ADAPTIVE.md) · [Exact and tolerant spacer F1](docs/benchmark-7.0.md)
 
 ## Build and test
 
@@ -29,17 +22,14 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-The executable is `build/Zuck`. CMake fetches the pinned parallel-hashmap and
+The native caller is `build/Zuck` and the coverage scanner is `build/zuck-kmer-spectrum`. CMake fetches the pinned parallel-hashmap and
 fmt dependencies when they are not already available. Python 3.11 or newer enables the
 CLI, result-bundle, boundary, and cycle-enumerator tests. The Dockerfile builds
 the checked-out source and its vendored dependencies.
 
 ### Standalone Linux bundle
 
-The Docker build compiles one portable, fully static executable, runs the
-complete C++ and Python test suite against it, and copies that exact executable
-into the final scratch image. Export the same tested artifact for use without
-Docker:
+The Docker build compiles the portable static caller and scanner. The default scratch image runs the native caller directly. To export the adaptive bundle for use with Python on the host, run the following commands.
 
 ```bash
 scripts/export_standalone.sh
@@ -52,9 +42,7 @@ legacy builder. With BuildKit, the equivalent direct export is
 `docker build --target standalone --output
 type=local,dest=dist/zuck-standalone .`.
 
-The bundle includes the executable, checksums, license, upstream attribution,
-and standalone instructions. It has no dynamic loader or shared-library
-dependencies and is built without host-specific `-march=native` instructions.
+The bundle includes both executables, the Python launcher and model, presets, checksums, license and upstream attribution. Both executables are statically linked and built without host-specific `-march=native` instructions.
 Its CPU architecture still matches the Docker build platform; use an explicit
 `--platform` when producing architecture-specific releases.
 

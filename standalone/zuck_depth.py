@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Estimate metagenomic depth from FASTQ and optionally route a Zuck 6.1 run."""
+"""Estimate metagenomic depth from FASTQ and select a Zuck calling mode."""
 
 import argparse
 import hashlib
@@ -25,17 +25,21 @@ def arguments():
                         help="Path to the k-mer spectrum executable.")
     commands.add_parser("estimate", parents=[common], help="Write the coverage estimate as JSON.")
     run = argparse.ArgumentParser(add_help=False)
-    run.add_argument("--zuck", type=Path, default=HERE / "Zuck", help="Zuck 6.1 executable.")
-    run.add_argument("--settings", type=Path, default=HERE / "v6.1.conf",
-                     help="Native preset. The route controls the two read-first switches below.")
+    run.add_argument("--zuck", type=Path, default=HERE / "Zuck", help="Path to the native Zuck executable.")
+    run.add_argument("--settings", type=Path, default=None,
+                     help="Native preset. Defaults to v7.0.conf for adaptive and v6.1.conf for run.")
     run.add_argument("--output-folder", type=Path, required=True,
                      help="A new or empty result directory.")
     for name in ROUTED_FLAGS:
         run.add_argument("--" + name, choices=("true", "false"),
                          help="Override this switch after coverage routing.")
     commands.add_parser("run", parents=[common, run], help="Use the original 6.1 shallow-only routing policy.")
-    commands.add_parser("adaptive", parents=[common, run], help="Run native sparse-junction recovery at low predicted depth.")
-    return parser.parse_args()
+    commands.add_parser("adaptive", parents=[common, run],
+                        help="Run Zuck 7.0 with sparse-junction recovery at low predicted depth.")
+    args = parser.parse_args()
+    if args.command in {"adaptive", "run"} and args.settings is None:
+        args.settings = HERE / ("v7.0.conf" if args.command == "adaptive" else "v6.1.conf")
+    return args
 
 
 def executable(path):

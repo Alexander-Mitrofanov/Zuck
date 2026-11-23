@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(Zuck VERSION 6.1)
+project(Zuck VERSION 7.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -141,6 +141,10 @@ add_library(zuck_core STATIC ${SOURCES_WITHOUT_MAIN} ${MEGAHIT_SOURCES})
 add_executable(Zuck src/main.cpp)
 target_link_libraries(Zuck PRIVATE zuck_core)
 
+add_executable(zuck-kmer-spectrum standalone/zuck_kmer_spectrum.cpp)
+target_include_directories(zuck-kmer-spectrum PRIVATE ${ZLIB_INCLUDE_DIRS})
+target_link_libraries(zuck-kmer-spectrum PRIVATE ${ZLIB_LIBRARIES})
+
 # Identify the compiled source even when the checkout contains local edits.
 # Reconfigure after source edits so the identifier cannot silently go stale.
 file(GLOB_RECURSE IDENTITY_SOURCES CONFIGURE_DEPENDS
@@ -221,9 +225,10 @@ if(ENABLE_DEBUG)
 endif()
 
 if(STATIC_BUILD)
-    set_target_properties(Zuck PROPERTIES
+    set_target_properties(Zuck zuck-kmer-spectrum PROPERTIES
         LINK_SEARCH_START_STATIC ON
         LINK_SEARCH_END_STATIC ON)
     target_link_options(Zuck PRIVATE -static)
+    target_link_options(zuck-kmer-spectrum PRIVATE -static)
 endif()
 

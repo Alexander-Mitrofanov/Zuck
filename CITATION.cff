@@ -2,7 +2,8 @@ cff-version: 1.2.0
 message: "Cite this software with its source revision and run-manifest fingerprint."
 title: "Zuck"
 type: software
-version: "6.1"
+version: "7.0"
+repository-code: "https://github.com/Alexander-Mitrofanov/Zuck/tree/standalone"
 date-released: 2026-11-23
 authors:
   - family-names: "Talibli"
