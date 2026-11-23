@@ -26,3 +26,5 @@ scripts/export_standalone.sh
 
 The Docker build is capped at four compilation and test workers by default.
 Override `BUILD_JOBS` or `TEST_JOBS` only when the build environment permits it.
+
+The optional coverage preflight estimates sequencing depth from FASTQ and can select a Zuck 6.1 calling mode. [Build and run the preflight](COVERAGE.md)
